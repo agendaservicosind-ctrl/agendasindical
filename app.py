@@ -1,10 +1,19 @@
 import streamlit as st
 import sqlite3
-import bcrypt
 import pandas as pd
 from datetime import date, timedelta
 import unicodedata
 import base64
+import os
+
+# ─── Tentativa de importar bcrypt (para compatibilidade com deploy) ──────────
+try:
+    import bcrypt
+    BCRYPT_AVAILABLE = True
+except ImportError:
+    BCRYPT_AVAILABLE = False
+    # Não mostrar warning em produção, mas permitir que o app rode
+    # st.warning("bcrypt não encontrado – modo de autenticação limitado")
 
 st.set_page_config(
     page_title="Sistema Sindicato",
@@ -13,7 +22,9 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-DB_NAME = "sindicato.db"
+# Caminho absoluto para o banco (melhor prática no Streamlit Cloud)
+DB_DIR = os.path.dirname(os.path.abspath(__file__))
+DB_NAME = os.path.join(DB_DIR, "sindicato.db")
 
 SERVICOS = [
     "Odontologia", "Psicologia", "Jurídico", "Cabeleireiro", "Manicure",
@@ -32,8 +43,14 @@ NIVEIS_ACESSO = ["Master", "ADM", "Recepção", "Prestador"]
 HORARIOS = [f"{h:02d}:{m:02d}" for h in range(8, 18) for m in (0, 30)]
 
 SENHA_INICIAL = "Sindicato@2026!"
-SENHA_INICIAL_HASH = bcrypt.hashpw(SENHA_INICIAL.encode('utf-8'), bcrypt.gensalt(12))
 
+# Hash inicial protegido
+SENHA_INICIAL_HASH = None
+if BCRYPT_AVAILABLE:
+    try:
+        SENHA_INICIAL_HASH = bcrypt.hashpw(SENHA_INICIAL.encode('utf-8'), bcrypt.gensalt(12))
+    except Exception:
+        SENHA_INICIAL_HASH = b''  # valor inválido → falha segura
 
 def normalize_for_db(text: str) -> str:
     if not text or not isinstance(text, str):
@@ -42,26 +59,28 @@ def normalize_for_db(text: str) -> str:
     text = ''.join(c for c in text if unicodedata.category(c) != 'Mn')
     return text.upper()
 
-
 def normalize_matricula(mat: str) -> str:
     if not mat:
         return ""
     return str(mat).strip().replace(" ", "")
 
-
 def hash_password(password: str) -> bytes:
+    if not BCRYPT_AVAILABLE or not bcrypt:
+        return b'fallback_hash_temp'  # nunca deve chegar aqui em produção
     return bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt(12))
 
-
 def check_password(password: str, hashed: bytes) -> bool:
-    return bcrypt.checkpw(password.encode('utf-8'), hashed)
-
+    if not BCRYPT_AVAILABLE or not bcrypt:
+        return False  # bloqueia login se bcrypt não funcionar
+    try:
+        return bcrypt.checkpw(password.encode('utf-8'), hashed)
+    except:
+        return False
 
 def limpar_cpf(valor):
     if not valor:
         return ""
     return "".join(c for c in str(valor) if c.isdigit())
-
 
 def formatar_telefone(valor):
     valor = limpar_cpf(valor)
@@ -70,7 +89,6 @@ def formatar_telefone(valor):
     if len(valor) == 10:
         return f"({valor[:2]}) {valor[2:6]}-{valor[6:]}"
     return valor
-
 
 def init_db():
     with sqlite3.connect(DB_NAME) as conn:
@@ -147,8 +165,11 @@ def init_db():
 
         conn.commit()
 
-
 def create_default_master_if_needed():
+    # Só cria se bcrypt estiver funcionando
+    if not BCRYPT_AVAILABLE or SENHA_INICIAL_HASH is None or SENHA_INICIAL_HASH == b'':
+        return
+
     with sqlite3.connect(DB_NAME) as conn:
         cursor = conn.cursor()
         cursor.execute("SELECT COUNT(*) FROM usuarios")
@@ -156,22 +177,12 @@ def create_default_master_if_needed():
 
         if count == 0:
             username = "master"
-            hashed = SENHA_INICIAL_HASH
-
             cursor.execute("""
                 INSERT INTO usuarios (username, password, tipo_acesso, senha_padrao)
                 VALUES (?, ?, 'Master', 1)
-            """, (username, hashed))
-
+            """, (username, SENHA_INICIAL_HASH))
             conn.commit()
-
-            print("\n" + "═" * 70)
-            print("  >>> PRIMEIRA EXECUÇÃO - USUÁRIO MASTER CRIADO AUTOMATICAMENTE <<<")
-            print(f"  Usuário:          {username}")
-            print(f"  Senha inicial:    {SENHA_INICIAL}")
-            print("  → Faça login e troque a senha imediatamente")
-            print("═" * 70 + "\n")
-
+            # Sem print para não vazar senha no log do Cloud
 
 def corrigir_coluna_foto():
     with sqlite3.connect(DB_NAME) as conn:
@@ -183,18 +194,15 @@ def corrigir_coluna_foto():
             cursor.execute("ALTER TABLE diretores ADD COLUMN foto BLOB")
             conn.commit()
 
-
 init_db()
 create_default_master_if_needed()
 corrigir_coluna_foto()
-
 
 if 'user_data' not in st.session_state:
     st.session_state.user_data = None
 
 if 'forcar_troca_senha' not in st.session_state:
     st.session_state.forcar_troca_senha = False
-
 
 # ─── LOGIN ──────────────────────────────────────────────────────────────────────
 if st.session_state.user_data is None:
@@ -612,16 +620,16 @@ else:
                                         conn.execute("""
                                             INSERT INTO usuarios (username, password, tipo_acesso, senha_padrao)
                                             VALUES (?, ?, ?, 1)
-                                        """, (usuario_d.strip(), SENHA_INICIAL_HASH, nivel_d))
+                                        """, (usuario_d.strip(), SENHA_INICIAL_HASH if SENHA_INICIAL_HASH else b'', nivel_d))
                                         conn.execute("COMMIT")
-                                        st.success(f"Usuário cadastrado! Senha inicial: {SENHA_INICIAL}")
+                                        st.success(f"Usuário cadastrado! Senha inicial definida.")
                                         st.rerun()
                                     except sqlite3.IntegrityError:
                                         conn.execute("ROLLBACK")
                                         st.error("Usuário já existe.")
                                     except Exception as e:
                                         conn.execute("ROLLBACK")
-                                        st.error(f"Erro: {str(e)}")
+                                        st.error(f"Erro ao cadastrar: {str(e)}")
                             else:
                                 st.error("Nome e usuário são obrigatórios.")
                 else:
@@ -721,15 +729,17 @@ else:
 
                                 if st.button("Reset senha para inicial", key=f"reset_{row['id']}"):
                                     if st.button("Confirmar reset", key=f"conf_reset_{row['id']}", type="primary"):
-                                        with sqlite3.connect(DB_NAME) as conn:
+                                        if SENHA_INICIAL_HASH and SENHA_INICIAL_HASH != b'':
                                             conn.execute("""
                                                 UPDATE usuarios 
                                                 SET password = ?, senha_padrao = 1 
                                                 WHERE username = ?
                                             """, (SENHA_INICIAL_HASH, row['username']))
                                             conn.commit()
-                                        st.success("Senha redefinida para a inicial.")
-                                        st.rerun()
+                                            st.success("Senha redefinida para a inicial.")
+                                            st.rerun()
+                                        else:
+                                            st.error("Não foi possível resetar (problema com hash).")
                             else:
                                 st.info("Apenas Master pode excluir ou resetar senha.")
 
