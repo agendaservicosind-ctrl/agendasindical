@@ -80,13 +80,12 @@ def normalize_matricula(mat: str) -> str:
 
 def hash_password(password: str) -> bytes:
     if not BCRYPT_AVAILABLE:
-        st.error("bcrypt não disponível")
-        return b''
+        return password.encode('utf-8')  # fallback para texto puro no deploy
     return bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt(12))
 
-def check_password(password: str, hashed: bytes) -> bool:
-    if not BCRYPT_AVAILABLE or not hashed:
-        return False
+def check_password(password: str, hashed) -> bool:
+    if not BCRYPT_AVAILABLE or not isinstance(hashed, bytes):
+        return hashed == password  # comparação direta se não for hash
     try:
         return bcrypt.checkpw(password.encode('utf-8'), hashed)
     except:
@@ -190,17 +189,15 @@ def init_db():
         conn.commit()
 
 def create_default_master_if_needed():
-    if not BCRYPT_AVAILABLE or SENHA_INICIAL_HASH is None or len(SENHA_INICIAL_HASH) < 50:
-        return
-
     with sqlite3.connect(DB_NAME) as conn:
         cursor = conn.cursor()
         cursor.execute("SELECT COUNT(*) FROM usuarios WHERE username = 'master'")
         if cursor.fetchone()[0] == 0:
+            senha_master = SENHA_INICIAL_HASH if SENHA_INICIAL_HASH else SENHA_INICIAL
             cursor.execute("""
                 INSERT INTO usuarios (username, password, tipo_acesso, senha_padrao)
                 VALUES ('master', ?, 'Master', 1)
-            """, (SENHA_INICIAL_HASH,))
+            """, (senha_master,))
             conn.commit()
 
 def corrigir_coluna_foto():
@@ -222,7 +219,7 @@ if 'user_data' not in st.session_state:
 if 'forcar_troca_senha' not in st.session_state:
     st.session_state.forcar_troca_senha = False
 
-# ─── LOGIN ──────────────────────────────────────────────────────────────────────
+# ─── LOGIN (compatível com texto puro e bcrypt) ────────────────────────────────
 if st.session_state.user_data is None:
     st.title("Login - Sistema Sindicato")
 
@@ -243,8 +240,16 @@ if st.session_state.user_data is None:
                     ).fetchone()
 
                 if user:
-                    stored_username, stored_hash, stored_tipo, senha_padrao = user
-                    if check_password(password, stored_hash):
+                    stored_username, stored_password, stored_tipo, senha_padrao = user
+
+                    senha_ok = False
+                    if BCRYPT_AVAILABLE and isinstance(stored_password, bytes):
+                        senha_ok = check_password(password, stored_password)
+                    else:
+                        # Senha em texto puro (funciona no Cloud sem bcrypt)
+                        senha_ok = (stored_password == password)
+
+                    if senha_ok:
                         st.session_state.user_data = {
                             "username": stored_username,
                             "tipo": stored_tipo.strip().lower(),
@@ -341,7 +346,7 @@ else:
             st.session_state.user_data = None
             st.rerun()
 
-        # ─── REDEFINIR SENHAS (APENAS MASTER) ───────────────────────────────────────
+        # ─── REDEFINIR SENHAS ──────────────────────────────────────────────────────
         if escolha == "Redefinir Senhas" and tipo_user == "master":
             st.title("Redefinir Senhas de Usuários")
 
@@ -365,8 +370,8 @@ else:
                     with col2:
                         if st.button("Resetar Senha", key=f"reset_user_{row['id']}"):
                             if st.button("Confirmar reset", key=f"conf_reset_user_{row['id']}", type="primary"):
+                                senha_reset = SENHA_INICIAL_HASH if SENHA_INICIAL_HASH else SENHA_INICIAL
                                 with sqlite3.connect(DB_NAME) as conn:
-                                    senha_reset = SENHA_INICIAL_HASH if SENHA_INICIAL_HASH else SENHA_INICIAL
                                     conn.execute("""
                                         UPDATE usuarios 
                                         SET password = ?, senha_padrao = 1 
@@ -638,12 +643,12 @@ else:
                                 if cursor.fetchone():
                                     raise ValueError("Usuário já existe. Escolha outro nome.")
 
-                                senha_para_inserir = SENHA_INICIAL_HASH if BCRYPT_AVAILABLE and SENHA_INICIAL_HASH else SENHA_INICIAL
+                                senha_inserir = SENHA_INICIAL_HASH if BCRYPT_AVAILABLE and SENHA_INICIAL_HASH else SENHA_INICIAL
 
                                 conn.execute("""
                                     INSERT INTO usuarios (username, password, tipo_acesso, senha_padrao)
                                     VALUES (?, ?, 'Prestador', 1)
-                                """, (username_clean, senha_para_inserir))
+                                """, (username_clean, senha_inserir))
 
                                 conn.commit()
                                 st.success(f"Prestador **{nome_p}** cadastrado!\n\n"
@@ -652,8 +657,6 @@ else:
                                            f"• Senha inicial: **{SENHA_INICIAL}**\n"
                                            f"→ Logue e troque a senha no primeiro acesso.")
 
-                                # Limpeza manual após sucesso (na próxima renderização)
-                                st.session_state['prestador_cadastrado_sucesso'] = True
                                 st.rerun()
 
                             except ValueError as ve:
@@ -663,19 +666,11 @@ else:
                             except Exception as e:
                                 if conn.in_transaction:
                                     conn.rollback()
-                                st.error(f"Erro ao cadastrar: {str(e)}\nVerifique conexão com banco e bcrypt.")
+                                st.error(f"Erro ao cadastrar: {str(e)}")
                             finally:
                                 conn.close()
-
                         else:
                             st.error("Nome completo e nome de usuário são obrigatórios.")
-
-                # Limpeza após sucesso (executado na próxima renderização)
-                if st.session_state.get('prestador_cadastrado_sucesso', False):
-                    for key in ["cad_nome_prestador", "cad_cpf_prestador", "cad_unidade_prestador", "cad_servico_prestador", "cad_username_prestador"]:
-                        if key in st.session_state:
-                            del st.session_state[key]
-                    del st.session_state['prestador_cadastrado_sucesso']
 
             with sqlite3.connect(DB_NAME) as conn:
                 df_p = pd.read_sql_query("SELECT id, nome, cpf, unidade, tipo_servico FROM prestadores ORDER BY nome", conn)
@@ -684,7 +679,6 @@ else:
                 st.info("Nenhum prestador cadastrado.")
             else:
                 for _, row in df_p.iterrows():
-                    expander_key = f"prest_exp_{row['id']}"
                     with st.expander(f"{row['nome']} – {row['tipo_servico']} ({row['unidade']})", expanded=False):
                         col1, col2 = st.columns([4, 1])
 
@@ -764,27 +758,31 @@ else:
                                 if foto_upload is not None:
                                     foto_bytes = foto_upload.read()
 
-                                with sqlite3.connect(DB_NAME) as conn:
-                                    try:
-                                        conn.execute("BEGIN TRANSACTION")
-                                        conn.execute("""
-                                            INSERT INTO diretores (nome, cpf, area_responsavel, nivel_acesso, username, foto)
-                                            VALUES (?, ?, ?, ?, ?, ?)
-                                        """, (nome_d.strip(), limpar_cpf(cpf_d), area_d or None, nivel_d, usuario_d.strip(), foto_bytes))
-                                        senha_diretor = SENHA_INICIAL_HASH if BCRYPT_AVAILABLE and SENHA_INICIAL_HASH else SENHA_INICIAL
-                                        conn.execute("""
-                                            INSERT INTO usuarios (username, password, tipo_acesso, senha_padrao)
-                                            VALUES (?, ?, ?, 1)
-                                        """, (usuario_d.strip(), senha_diretor, nivel_d))
-                                        conn.execute("COMMIT")
-                                        st.success(f"Usuário cadastrado! Senha inicial definida.")
-                                        st.rerun()
-                                    except sqlite3.IntegrityError:
-                                        conn.execute("ROLLBACK")
-                                        st.error("Usuário já existe.")
-                                    except Exception as e:
-                                        conn.execute("ROLLBACK")
-                                        st.error(f"Erro ao cadastrar: {str(e)}")
+                                conn = sqlite3.connect(DB_NAME)
+                                try:
+                                    conn.execute("BEGIN TRANSACTION")
+                                    conn.execute("""
+                                        INSERT INTO diretores (nome, cpf, area_responsavel, nivel_acesso, username, foto)
+                                        VALUES (?, ?, ?, ?, ?, ?)
+                                    """, (nome_d.strip(), limpar_cpf(cpf_d), area_d or None, nivel_d, usuario_d.strip(), foto_bytes))
+
+                                    senha_diretor = SENHA_INICIAL_HASH if SENHA_INICIAL_HASH else SENHA_INICIAL
+
+                                    conn.execute("""
+                                        INSERT INTO usuarios (username, password, tipo_acesso, senha_padrao)
+                                        VALUES (?, ?, ?, 1)
+                                    """, (usuario_d.strip(), senha_diretor, nivel_d))
+                                    conn.commit()
+                                    st.success(f"Usuário cadastrado! Senha inicial definida.")
+                                    st.rerun()
+                                except sqlite3.IntegrityError:
+                                    conn.rollback()
+                                    st.error("Usuário já existe.")
+                                except Exception as e:
+                                    conn.rollback()
+                                    st.error(f"Erro ao cadastrar: {str(e)}")
+                                finally:
+                                    conn.close()
                             else:
                                 st.error("Nome e usuário são obrigatórios.")
                 else:
@@ -871,7 +869,8 @@ else:
                             if is_master:
                                 if st.button("Excluir", key=f"del_dir_{row['id']}"):
                                     if st.button("Confirmar exclusão", key=f"conf_del_{row['id']}", type="primary"):
-                                        with sqlite3.connect(DB_NAME) as conn:
+                                        conn = sqlite3.connect(DB_NAME)
+                                        try:
                                             cursor = conn.cursor()
                                             cursor.execute("SELECT username FROM diretores WHERE id = ?", (row['id'],))
                                             username_dir = cursor.fetchone()
@@ -879,6 +878,11 @@ else:
                                                 conn.execute("DELETE FROM usuarios WHERE username = ?", (username_dir[0],))
                                             conn.execute("DELETE FROM diretores WHERE id = ?", (row['id'],))
                                             conn.commit()
+                                        except Exception as e:
+                                            conn.rollback()
+                                            st.error(f"Erro ao excluir: {str(e)}")
+                                        finally:
+                                            conn.close()
                                         st.success("Usuário excluído!")
                                         st.rerun()
 
