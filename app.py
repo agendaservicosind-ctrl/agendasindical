@@ -13,6 +13,7 @@ try:
 except ImportError:
     BCRYPT_AVAILABLE = False
 
+# Para geração de PDF no relatório (opcional)
 try:
     from reportlab.lib.pagesizes import letter
     from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph
@@ -29,6 +30,7 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
+# Caminho do banco
 DB_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_NAME = os.path.join(DB_DIR, "sindicato.db")
 
@@ -60,6 +62,11 @@ if BCRYPT_AVAILABLE:
     except Exception as e:
         st.error(f"Erro ao gerar hash bcrypt: {str(e)}")
         SENHA_INICIAL_HASH = None
+else:
+    st.warning("bcrypt não instalado → login limitado (instale: pip install bcrypt==4.2.0)")
+
+if not REPORTLAB_AVAILABLE:
+    st.warning("reportlab não instalado → download PDF desabilitado (instale: pip install reportlab)")
 
 def normalize_for_db(text: str) -> str:
     if not text or not isinstance(text, str):
@@ -73,12 +80,13 @@ def normalize_matricula(mat: str) -> str:
 
 def hash_password(password: str) -> bytes:
     if not BCRYPT_AVAILABLE:
-        return password.encode('utf-8')  # fallback para texto puro
+        st.error("bcrypt não disponível")
+        return b''
     return bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt(12))
 
-def check_password(password: str, hashed) -> bool:
-    if not BCRYPT_AVAILABLE or not isinstance(hashed, bytes):
-        return hashed == password  # comparação direta se não for hash
+def check_password(password: str, hashed: bytes) -> bool:
+    if not BCRYPT_AVAILABLE or not hashed:
+        return False
     try:
         return bcrypt.checkpw(password.encode('utf-8'), hashed)
     except:
@@ -182,15 +190,17 @@ def init_db():
         conn.commit()
 
 def create_default_master_if_needed():
+    if not BCRYPT_AVAILABLE or SENHA_INICIAL_HASH is None or len(SENHA_INICIAL_HASH) < 50:
+        return
+
     with sqlite3.connect(DB_NAME) as conn:
         cursor = conn.cursor()
         cursor.execute("SELECT COUNT(*) FROM usuarios WHERE username = 'master'")
         if cursor.fetchone()[0] == 0:
-            senha_master = SENHA_INICIAL_HASH if SENHA_INICIAL_HASH else SENHA_INICIAL
             cursor.execute("""
                 INSERT INTO usuarios (username, password, tipo_acesso, senha_padrao)
                 VALUES ('master', ?, 'Master', 1)
-            """, (senha_master,))
+            """, (SENHA_INICIAL_HASH,))
             conn.commit()
 
 def corrigir_coluna_foto():
@@ -212,7 +222,7 @@ if 'user_data' not in st.session_state:
 if 'forcar_troca_senha' not in st.session_state:
     st.session_state.forcar_troca_senha = False
 
-# ─── LOGIN (compatível com texto puro e bcrypt) ────────────────────────────────
+# ─── LOGIN ──────────────────────────────────────────────────────────────────────
 if st.session_state.user_data is None:
     st.title("Login - Sistema Sindicato")
 
@@ -235,12 +245,10 @@ if st.session_state.user_data is None:
                 if user:
                     stored_username, stored_password, stored_tipo, senha_padrao = user
 
-                    senha_ok = False
-                    if BCRYPT_AVAILABLE and isinstance(stored_password, bytes):
-                        senha_ok = check_password(password, stored_password)
-                    else:
-                        # Senha em texto puro (o que provavelmente está no seu banco)
-                        senha_ok = (stored_password == password)
+                    # Comparação direta como texto puro (funciona no Cloud sem bcrypt)
+                    # Se senha no banco for hash, converte para string para comparar
+                    senha_banco = stored_password.decode('utf-8') if isinstance(stored_password, bytes) else stored_password
+                    senha_ok = (senha_banco == password)
 
                     if senha_ok:
                         st.session_state.user_data = {
@@ -339,7 +347,7 @@ else:
             st.session_state.user_data = None
             st.rerun()
 
-        # ─── REDEFINIR SENHAS ──────────────────────────────────────────────────────
+        # ─── REDEFINIR SENHAS (APENAS MASTER) ───────────────────────────────────────
         if escolha == "Redefinir Senhas" and tipo_user == "master":
             st.title("Redefinir Senhas de Usuários")
 
@@ -363,8 +371,8 @@ else:
                     with col2:
                         if st.button("Resetar Senha", key=f"reset_user_{row['id']}"):
                             if st.button("Confirmar reset", key=f"conf_reset_user_{row['id']}", type="primary"):
-                                senha_reset = SENHA_INICIAL_HASH if SENHA_INICIAL_HASH else SENHA_INICIAL
                                 with sqlite3.connect(DB_NAME) as conn:
+                                    senha_reset = SENHA_INICIAL_HASH if SENHA_INICIAL_HASH else SENHA_INICIAL
                                     conn.execute("""
                                         UPDATE usuarios 
                                         SET password = ?, senha_padrao = 1 
@@ -543,6 +551,67 @@ else:
                                 st.success("Agendamento registrado com sucesso!")
                                 st.rerun()
 
+        # ─── MEUS AGENDAMENTOS / ATENDIMENTOS ───────────────────────────────────────
+        elif escolha in ["Atendimentos", "Meus Agendamentos"]:
+            if tipo_user == "prestador":
+                st.title("Meus Agendamentos")
+                filtro_status = st.selectbox("Filtrar por status", ["Todos", "Pendente", "Realizado", "Cancelado"])
+            else:
+                st.title("Lista de Atendimentos")
+                filtro_status = st.selectbox("Filtrar por status", ["Todos", "Pendente", "Realizado", "Cancelado"])
+
+            with sqlite3.connect(DB_NAME) as conn:
+                query = """
+                    SELECT id, nome_socio, tipo_servico, unidade, data_atendimento, horario, status, diretor_solicitante
+                    FROM agendamentos 
+                    WHERE 1=1
+                """
+                params = []
+
+                if tipo_user == "prestador":
+                    query += " AND prestador_nome = ?"
+                    params.append(nome_user)
+
+                if filtro_status != "Todos":
+                    query += " AND status = ?"
+                    params.append(filtro_status)
+
+                query += " ORDER BY data_atendimento DESC, horario DESC"
+
+                df = pd.read_sql_query(query, conn, params=params)
+
+            if df.empty:
+                st.info("Nenhum agendamento encontrado.")
+            else:
+                df["Data"] = pd.to_datetime(df["data_atendimento"]).dt.strftime("%d/%m/%Y")
+                df = df.drop(columns=["data_atendimento"])
+
+                if tipo_user == "prestador":
+                    for _, row in df.iterrows():
+                        if row["status"] == "Pendente":
+                            cols = st.columns([5, 1])
+                            with cols[0]:
+                                st.write(f"**{row['nome_socio']}** – {row['tipo_servico']} | {row['unidade']} | {row['Data']} {row['horario']}")
+                            with cols[1]:
+                                if st.button("✓ Marcar como Realizado", key=f"realizar_{row['id']}"):
+                                    with st.spinner("Validando..."):
+                                        with sqlite3.connect(DB_NAME) as conn:
+                                            conn.execute("""
+                                                UPDATE agendamentos 
+                                                SET status = 'Realizado',
+                                                    data_realizado = CURRENT_TIMESTAMP,
+                                                    validado_por = ?
+                                                WHERE id = ?
+                                            """, (nome_user, row['id']))
+                                            conn.commit()
+                                    st.success(f"Atendimento marcado como Realizado por {nome_user}!")
+                                    st.rerun()
+                        else:
+                            st.markdown(f"**{row['nome_socio']}** – {row['tipo_servico']} | {row['unidade']} | {row['Data']} {row['horario']} **({row['status']})**")
+                        st.markdown("---")
+                else:
+                    st.dataframe(df, use_container_width=True)
+
         # ─── PRESTADORES ────────────────────────────────────────────────────────────
         elif escolha == "Prestadores" and tipo_user in ["master", "adm", "recepção"]:
             st.title("Gestão de Prestadores")
@@ -575,12 +644,12 @@ else:
                                 if cursor.fetchone():
                                     raise ValueError("Usuário já existe. Escolha outro nome.")
 
-                                senha_inserir = SENHA_INICIAL_HASH if BCRYPT_AVAILABLE and SENHA_INICIAL_HASH else SENHA_INICIAL
+                                senha_para_inserir = SENHA_INICIAL_HASH if BCRYPT_AVAILABLE and SENHA_INICIAL_HASH else SENHA_INICIAL
 
                                 conn.execute("""
                                     INSERT INTO usuarios (username, password, tipo_acesso, senha_padrao)
                                     VALUES (?, ?, 'Prestador', 1)
-                                """, (username_clean, senha_inserir))
+                                """, (username_clean, senha_para_inserir))
 
                                 conn.commit()
                                 st.success(f"Prestador **{nome_p}** cadastrado!\n\n"
@@ -589,6 +658,8 @@ else:
                                            f"• Senha inicial: **{SENHA_INICIAL}**\n"
                                            f"→ Logue e troque a senha no primeiro acesso.")
 
+                                # Limpeza manual após sucesso (na próxima renderização)
+                                st.session_state['prestador_cadastrado_sucesso'] = True
                                 st.rerun()
 
                             except ValueError as ve:
@@ -598,11 +669,19 @@ else:
                             except Exception as e:
                                 if conn.in_transaction:
                                     conn.rollback()
-                                st.error(f"Erro ao cadastrar: {str(e)}")
+                                st.error(f"Erro ao cadastrar: {str(e)}\nVerifique conexão com banco e bcrypt.")
                             finally:
                                 conn.close()
+
                         else:
                             st.error("Nome completo e nome de usuário são obrigatórios.")
+
+                # Limpeza após sucesso (executado na próxima renderização)
+                if st.session_state.get('prestador_cadastrado_sucesso', False):
+                    for key in ["cad_nome_prestador", "cad_cpf_prestador", "cad_unidade_prestador", "cad_servico_prestador", "cad_username_prestador"]:
+                        if key in st.session_state:
+                            del st.session_state[key]
+                    del st.session_state['prestador_cadastrado_sucesso']
 
             with sqlite3.connect(DB_NAME) as conn:
                 df_p = pd.read_sql_query("SELECT id, nome, cpf, unidade, tipo_servico FROM prestadores ORDER BY nome", conn)
@@ -611,6 +690,7 @@ else:
                 st.info("Nenhum prestador cadastrado.")
             else:
                 for _, row in df_p.iterrows():
+                    expander_key = f"prest_exp_{row['id']}"
                     with st.expander(f"{row['nome']} – {row['tipo_servico']} ({row['unidade']})", expanded=False):
                         col1, col2 = st.columns([4, 1])
 
@@ -690,31 +770,27 @@ else:
                                 if foto_upload is not None:
                                     foto_bytes = foto_upload.read()
 
-                                conn = sqlite3.connect(DB_NAME)
-                                try:
-                                    conn.execute("BEGIN TRANSACTION")
-                                    conn.execute("""
-                                        INSERT INTO diretores (nome, cpf, area_responsavel, nivel_acesso, username, foto)
-                                        VALUES (?, ?, ?, ?, ?, ?)
-                                    """, (nome_d.strip(), limpar_cpf(cpf_d), area_d or None, nivel_d, usuario_d.strip(), foto_bytes))
-
-                                    senha_diretor = SENHA_INICIAL_HASH if SENHA_INICIAL_HASH else SENHA_INICIAL
-
-                                    conn.execute("""
-                                        INSERT INTO usuarios (username, password, tipo_acesso, senha_padrao)
-                                        VALUES (?, ?, ?, 1)
-                                    """, (usuario_d.strip(), senha_diretor, nivel_d))
-                                    conn.commit()
-                                    st.success(f"Usuário cadastrado! Senha inicial definida.")
-                                    st.rerun()
-                                except sqlite3.IntegrityError:
-                                    conn.rollback()
-                                    st.error("Usuário já existe.")
-                                except Exception as e:
-                                    conn.rollback()
-                                    st.error(f"Erro ao cadastrar: {str(e)}")
-                                finally:
-                                    conn.close()
+                                with sqlite3.connect(DB_NAME) as conn:
+                                    try:
+                                        conn.execute("BEGIN TRANSACTION")
+                                        conn.execute("""
+                                            INSERT INTO diretores (nome, cpf, area_responsavel, nivel_acesso, username, foto)
+                                            VALUES (?, ?, ?, ?, ?, ?)
+                                        """, (nome_d.strip(), limpar_cpf(cpf_d), area_d or None, nivel_d, usuario_d.strip(), foto_bytes))
+                                        senha_diretor = SENHA_INICIAL_HASH if BCRYPT_AVAILABLE and SENHA_INICIAL_HASH else SENHA_INICIAL
+                                        conn.execute("""
+                                            INSERT INTO usuarios (username, password, tipo_acesso, senha_padrao)
+                                            VALUES (?, ?, ?, 1)
+                                        """, (usuario_d.strip(), senha_diretor, nivel_d))
+                                        conn.execute("COMMIT")
+                                        st.success(f"Usuário cadastrado! Senha inicial definida.")
+                                        st.rerun()
+                                    except sqlite3.IntegrityError:
+                                        conn.execute("ROLLBACK")
+                                        st.error("Usuário já existe.")
+                                    except Exception as e:
+                                        conn.execute("ROLLBACK")
+                                        st.error(f"Erro ao cadastrar: {str(e)}")
                             else:
                                 st.error("Nome e usuário são obrigatórios.")
                 else:
@@ -801,8 +877,7 @@ else:
                             if is_master:
                                 if st.button("Excluir", key=f"del_dir_{row['id']}"):
                                     if st.button("Confirmar exclusão", key=f"conf_del_{row['id']}", type="primary"):
-                                        conn = sqlite3.connect(DB_NAME)
-                                        try:
+                                        with sqlite3.connect(DB_NAME) as conn:
                                             cursor = conn.cursor()
                                             cursor.execute("SELECT username FROM diretores WHERE id = ?", (row['id'],))
                                             username_dir = cursor.fetchone()
@@ -810,11 +885,6 @@ else:
                                                 conn.execute("DELETE FROM usuarios WHERE username = ?", (username_dir[0],))
                                             conn.execute("DELETE FROM diretores WHERE id = ?", (row['id'],))
                                             conn.commit()
-                                        except Exception as e:
-                                            conn.rollback()
-                                            st.error(f"Erro ao excluir: {str(e)}")
-                                        finally:
-                                            conn.close()
                                         st.success("Usuário excluído!")
                                         st.rerun()
 
@@ -986,6 +1056,7 @@ else:
 
                     st.dataframe(df_display, use_container_width=True, hide_index=True)
 
+                    # DOWNLOAD EXCEL
                     output_excel = io.BytesIO()
                     with pd.ExcelWriter(output_excel, engine='xlsxwriter') as writer:
                         df_relatorio.to_excel(writer, index=False, sheet_name='Relatório')
@@ -994,10 +1065,11 @@ else:
                     st.download_button(
                         label="Baixar em Excel (.xlsx)",
                         data=excel_data,
-                        file_name=f"relatorio_{date.today().strftime('%Y-%m-%d')}.xlsx",
+                        file_name=f"relatorio_servicos_{date.today().strftime('%Y-%m-%d')}.xlsx",
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                     )
 
+                    # DOWNLOAD PDF
                     if REPORTLAB_AVAILABLE:
                         output_pdf = io.BytesIO()
                         doc = SimpleDocTemplate(output_pdf, pagesize=letter)
@@ -1029,7 +1101,7 @@ else:
                         st.download_button(
                             label="Baixar em PDF",
                             data=pdf_data,
-                            file_name=f"relatorio_{date.today().strftime('%Y-%m-%d')}.pdf",
+                            file_name=f"relatorio_servicos_{date.today().strftime('%Y-%m-%d')}.pdf",
                             mime="application/pdf"
                         )
                     else:
