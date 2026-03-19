@@ -176,5 +176,5 @@ yarl==1.23.0
 streamlit
 pandas
 openpyxl
-bcrypt>=4.0.1
 reportlab
+bcrypt==4.1.3
