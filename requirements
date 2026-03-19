@@ -177,4 +177,4 @@ streamlit
 pandas
 openpyxl
 reportlab
-bcrypt==4.1.3
+bcrypt==3.2.2
