@@ -1,9 +1,3 @@
-if 'reset_master' not in st.session_state:
-    with sqlite3.connect(DB_NAME) as conn:
-        conn.execute("DELETE FROM usuarios WHERE username = 'GUTEMBERG' OR username = 'master'")
-        conn.commit()
-    st.session_state.reset_master = True
-
 import streamlit as st
 import sqlite3
 import pandas as pd
