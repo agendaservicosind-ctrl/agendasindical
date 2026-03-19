@@ -13,7 +13,6 @@ try:
 except ImportError:
     BCRYPT_AVAILABLE = False
 
-# Para geração de PDF no relatório (opcional)
 try:
     from reportlab.lib.pagesizes import letter
     from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph
@@ -51,22 +50,6 @@ HORARIOS = [f"{h:02d}:{m:02d}" for h in range(8, 18) for m in (0, 30)]
 
 SENHA_INICIAL = "Sindicato@2026!"
 
-SENHA_INICIAL_HASH = None
-if BCRYPT_AVAILABLE:
-    try:
-        SENHA_INICIAL_HASH = bcrypt.hashpw(
-            SENHA_INICIAL.encode('utf-8'),
-            bcrypt.gensalt(12)
-        )
-    except Exception as e:
-        st.error(f"Erro ao gerar hash bcrypt: {str(e)}")
-        SENHA_INICIAL_HASH = None
-else:
-    st.warning("bcrypt não instalado → login limitado (instale: pip install bcrypt==4.2.0)")
-
-if not REPORTLAB_AVAILABLE:
-    st.warning("reportlab não instalado → download PDF desabilitado (instale: pip install reportlab)")
-
 def normalize_for_db(text: str) -> str:
     if not text or not isinstance(text, str):
         return ""
@@ -78,17 +61,23 @@ def normalize_matricula(mat: str) -> str:
     return str(mat or "").strip().replace(" ", "")
 
 def hash_password(password: str):
-    if not BCRYPT_AVAILABLE:
-        return password  # texto puro no Cloud
-    return bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt(12))
+    if BCRYPT_AVAILABLE:
+        return bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt(12))
+    else:
+        return password.encode('utf-8')
 
-def check_password(password: str, hashed):
-    if not BCRYPT_AVAILABLE or not isinstance(hashed, bytes):
-        return hashed == password  # comparação direta
-    try:
-        return bcrypt.checkpw(password.encode('utf-8'), hashed)
-    except:
-        return False
+def check_password(provided_password: str, stored_password) -> bool:
+    if BCRYPT_AVAILABLE and isinstance(stored_password, (bytes, bytearray)):
+        try:
+            return bcrypt.checkpw(provided_password.encode('utf-8'), stored_password)
+        except:
+            pass
+    stored_str = (
+        stored_password.decode('utf-8', errors='ignore')
+        if isinstance(stored_password, (bytes, bytearray))
+        else str(stored_password)
+    )
+    return stored_str.strip() == provided_password.strip()
 
 def limpar_cpf(valor):
     return "".join(c for c in str(valor or "") if c.isdigit())
@@ -192,11 +181,11 @@ def create_default_master_if_needed():
         cursor = conn.cursor()
         cursor.execute("SELECT COUNT(*) FROM usuarios WHERE username = 'master'")
         if cursor.fetchone()[0] == 0:
-            senha_master = SENHA_INICIAL_HASH if SENHA_INICIAL_HASH else SENHA_INICIAL
+            senha_hash = hash_password(SENHA_INICIAL)
             cursor.execute("""
                 INSERT INTO usuarios (username, password, tipo_acesso, senha_padrao)
                 VALUES ('master', ?, 'Master', 1)
-            """, (senha_master,))
+            """, (senha_hash,))
             conn.commit()
 
 def corrigir_coluna_foto():
@@ -218,13 +207,12 @@ if 'user_data' not in st.session_state:
 if 'forcar_troca_senha' not in st.session_state:
     st.session_state.forcar_troca_senha = False
 
-# ─── LOGIN (compatível com texto puro e bcrypt) ────────────────────────────────
+# ─── LOGIN ──────────────────────────────────────────────────────────────────────
 if st.session_state.user_data is None:
     st.title("Login - Sistema Sindicato")
 
-    # Avisos mantidos, mas não bloqueiam o app
     if not BCRYPT_AVAILABLE:
-        st.info("bcrypt não instalado → usando comparação direta de senha (funciona normal)")
+        st.warning("⚠️ bcrypt não instalado → usando comparação em texto plano")
 
     with st.form("login_form"):
         username = st.text_input("Usuário")
@@ -238,19 +226,14 @@ if st.session_state.user_data is None:
             else:
                 with sqlite3.connect(DB_NAME) as conn:
                     user = conn.execute(
-                        "SELECT username, password, tipo_acesso, senha_padrao FROM usuarios WHERE username = ?",
-                        (username.strip(),)
+                        "SELECT username, password, tipo_acesso, senha_padrao FROM usuarios WHERE UPPER(username) = ?",
+                        (username.strip().upper(),)
                     ).fetchone()
 
                 if user:
                     stored_username, stored_password, stored_tipo, senha_padrao = user
 
-                    # Comparação direta como string (funciona no Cloud sem bcrypt)
-                    # Converte bytes para string se necessário
-                    senha_banco = stored_password.decode('utf-8') if isinstance(stored_password, bytes) else str(stored_password)
-                    senha_ok = (senha_banco == password)
-
-                    if senha_ok:
+                    if check_password(password, stored_password):
                         st.session_state.user_data = {
                             "username": stored_username,
                             "tipo": stored_tipo.strip().lower(),
@@ -264,10 +247,9 @@ if st.session_state.user_data is None:
                         st.error("Senha incorreta.")
                 else:
                     st.error("Usuário não encontrado.")
-
 else:
     user_info = st.session_state.user_data
-    tipo_user = user_info["tipo"]
+    tipo_user = user_info["tipo"].lower()
     nome_user = user_info["username"]
 
     foto_bytes = None
@@ -347,42 +329,7 @@ else:
             st.session_state.user_data = None
             st.rerun()
 
-        # ─── REDEFINIR SENHAS ──────────────────────────────────────────────────────
-        if escolha == "Redefinir Senhas" and tipo_user == "master":
-            st.title("Redefinir Senhas de Usuários")
-
-            st.warning("Isso irá redefinir a senha para a inicial e forçar troca no próximo login.")
-
-            with sqlite3.connect(DB_NAME) as conn:
-                df_usuarios = pd.read_sql_query("""
-                    SELECT id, username, tipo_acesso, senha_padrao 
-                    FROM usuarios 
-                    WHERE username != ?
-                    ORDER BY tipo_acesso, username
-                """, conn, params=(nome_user,))
-
-            if df_usuarios.empty:
-                st.info("Nenhum outro usuário cadastrado.")
-            else:
-                for _, row in df_usuarios.iterrows():
-                    col1, col2 = st.columns([4, 1])
-                    with col1:
-                        st.write(f"**{row['username']}** ({row['tipo_acesso']}) – Senha padrão: {'Sim' if row['senha_padrao'] else 'Não'}")
-                    with col2:
-                        if st.button("Resetar Senha", key=f"reset_user_{row['id']}"):
-                            if st.button("Confirmar reset", key=f"conf_reset_user_{row['id']}", type="primary"):
-                                senha_reset = SENHA_INICIAL_HASH if SENHA_INICIAL_HASH else SENHA_INICIAL
-                                with sqlite3.connect(DB_NAME) as conn:
-                                    conn.execute("""
-                                        UPDATE usuarios 
-                                        SET password = ?, senha_padrao = 1 
-                                        WHERE id = ?
-                                    """, (senha_reset, row['id']))
-                                    conn.commit()
-                                st.success(f"Senha de **{row['username']}** redefinida para a inicial!")
-                                st.rerun()
-
-        # ─── AGENDAR ────────────────────────────────────────────────────────────────
+        # ─── AGENDAR (corrigido - sem textos "acordos" e "Unidade de caro") ────────
         if escolha == "Agendar":
             st.title("Novo Agendamento")
 
@@ -450,6 +397,8 @@ else:
                 campos_disabled = False
                 nao_associado = False
 
+            st.markdown("---")
+
             col1, col2 = st.columns(2)
 
             serv_default = st.session_state.get('servico_agendamento', SERVICOS[0])
@@ -488,6 +437,8 @@ else:
             else:
                 st.warning(f"Nenhum prestador encontrado para {servico} na {unidade}.")
                 prestador = None
+
+            st.markdown("---")
 
             with st.form("form_agendamento", clear_on_submit=True):
                 col1, col2 = st.columns(2)
@@ -551,7 +502,7 @@ else:
                                 st.success("Agendamento registrado com sucesso!")
                                 st.rerun()
 
-        # ─── MEUS AGENDAMENTOS / ATENDIMENTOS ───────────────────────────────────────
+        # ─── ATENDIMENTOS / MEUS AGENDAMENTOS ───────────────────────────────────────
         elif escolha in ["Atendimentos", "Meus Agendamentos"]:
             if tipo_user == "prestador":
                 st.title("Meus Agendamentos")
@@ -644,12 +595,12 @@ else:
                                 if cursor.fetchone():
                                     raise ValueError("Usuário já existe. Escolha outro nome.")
 
-                                senha_inserir = SENHA_INICIAL_HASH if BCRYPT_AVAILABLE and SENHA_INICIAL_HASH else SENHA_INICIAL
+                                senha_para_inserir = hash_password(SENHA_INICIAL)
 
                                 conn.execute("""
                                     INSERT INTO usuarios (username, password, tipo_acesso, senha_padrao)
                                     VALUES (?, ?, 'Prestador', 1)
-                                """, (username_clean, senha_inserir))
+                                """, (username_clean, senha_para_inserir))
 
                                 conn.commit()
                                 st.success(f"Prestador **{nome_p}** cadastrado!\n\n"
@@ -767,7 +718,7 @@ else:
                                         VALUES (?, ?, ?, ?, ?, ?)
                                     """, (nome_d.strip(), limpar_cpf(cpf_d), area_d or None, nivel_d, usuario_d.strip(), foto_bytes))
 
-                                    senha_diretor = SENHA_INICIAL_HASH if SENHA_INICIAL_HASH else SENHA_INICIAL
+                                    senha_diretor = hash_password(SENHA_INICIAL)
 
                                     conn.execute("""
                                         INSERT INTO usuarios (username, password, tipo_acesso, senha_padrao)
@@ -870,8 +821,7 @@ else:
                             if is_master:
                                 if st.button("Excluir", key=f"del_dir_{row['id']}"):
                                     if st.button("Confirmar exclusão", key=f"conf_del_{row['id']}", type="primary"):
-                                        conn = sqlite3.connect(DB_NAME)
-                                        try:
+                                        with sqlite3.connect(DB_NAME) as conn:
                                             cursor = conn.cursor()
                                             cursor.execute("SELECT username FROM diretores WHERE id = ?", (row['id'],))
                                             username_dir = cursor.fetchone()
@@ -879,17 +829,12 @@ else:
                                                 conn.execute("DELETE FROM usuarios WHERE username = ?", (username_dir[0],))
                                             conn.execute("DELETE FROM diretores WHERE id = ?", (row['id'],))
                                             conn.commit()
-                                        except Exception as e:
-                                            conn.rollback()
-                                            st.error(f"Erro ao excluir: {str(e)}")
-                                        finally:
-                                            conn.close()
                                         st.success("Usuário excluído!")
                                         st.rerun()
 
                                 if st.button("Reset senha para inicial", key=f"reset_{row['id']}"):
                                     if st.button("Confirmar reset", key=f"conf_reset_{row['id']}", type="primary"):
-                                        senha_reset = SENHA_INICIAL_HASH if SENHA_INICIAL_HASH else SENHA_INICIAL
+                                        senha_reset = hash_password(SENHA_INICIAL)
                                         conn.execute("""
                                             UPDATE usuarios 
                                             SET password = ?, senha_padrao = 1 
@@ -1055,7 +1000,6 @@ else:
 
                     st.dataframe(df_display, use_container_width=True, hide_index=True)
 
-                    # DOWNLOAD EXCEL
                     output_excel = io.BytesIO()
                     with pd.ExcelWriter(output_excel, engine='xlsxwriter') as writer:
                         df_relatorio.to_excel(writer, index=False, sheet_name='Relatório')
@@ -1068,7 +1012,6 @@ else:
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                     )
 
-                    # DOWNLOAD PDF
                     if REPORTLAB_AVAILABLE:
                         output_pdf = io.BytesIO()
                         doc = SimpleDocTemplate(output_pdf, pagesize=letter)
