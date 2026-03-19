@@ -222,6 +222,10 @@ if 'forcar_troca_senha' not in st.session_state:
 if st.session_state.user_data is None:
     st.title("Login - Sistema Sindicato")
 
+    # Avisos mantidos, mas não bloqueiam o app
+    if not BCRYPT_AVAILABLE:
+        st.info("bcrypt não instalado → usando comparação direta de senha (funciona normal)")
+
     with st.form("login_form"):
         username = st.text_input("Usuário")
         password = st.text_input("Senha", type="password")
@@ -241,7 +245,8 @@ if st.session_state.user_data is None:
                 if user:
                     stored_username, stored_password, stored_tipo, senha_padrao = user
 
-                    # Converte senha do banco para string (funciona com texto ou hash antigo)
+                    # Comparação direta como string (funciona no Cloud sem bcrypt)
+                    # Converte bytes para string se necessário
                     senha_banco = stored_password.decode('utf-8') if isinstance(stored_password, bytes) else str(stored_password)
                     senha_ok = (senha_banco == password)
 
