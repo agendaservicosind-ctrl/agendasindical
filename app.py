@@ -44,25 +44,17 @@ def hash_password(password: str) -> str:
 def check_password(provided: str, stored) -> bool:
     if stored is None:
         return False
-    
-    # Converte bytes para str (problema comum no Streamlit Cloud)
     if isinstance(stored, (bytes, bytearray)):
         try:
             stored = stored.decode('utf-8')
-        except UnicodeDecodeError:
+        except:
             return False
-    
     stored = str(stored).strip()
     provided = str(provided).strip()
-    
     if not stored:
         return False
-    
-    # Compatibilidade com senha antiga em texto plano
     if '$' not in stored:
         return stored == provided
-    
-    # Formato com salt$hash
     try:
         salt, hashed = stored.split('$', 1)
         computed = hashlib.sha256((salt + provided).encode('utf-8')).hexdigest()
@@ -112,7 +104,7 @@ def init_db():
             except sqlite3.OperationalError:
                 pass
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_matricula ON socios(matricula)")
-        
+
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS usuarios (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -171,18 +163,6 @@ def init_db():
             pass
         conn.commit()
 
-def force_reset_master_password():
-    senha_hash = hash_password(SENHA_INICIAL)
-    with sqlite3.connect(DB_NAME) as conn:
-        cursor = conn.cursor()
-        cursor.execute("""
-            INSERT OR REPLACE INTO usuarios 
-            (username, password, tipo_acesso, senha_padrao)
-            VALUES ('master', ?, 'Master', 1)
-        """, (senha_hash,))
-        conn.commit()
-    st.info("Senha do usuário 'master' foi RESETADA para 'Sindicato@2026!' (para corrigir incompatibilidade). Logue agora e troque imediatamente.")
-
 def corrigir_coluna_foto():
     with sqlite3.connect(DB_NAME) as conn:
         cursor = conn.cursor()
@@ -193,7 +173,6 @@ def corrigir_coluna_foto():
             conn.commit()
 
 init_db()
-force_reset_master_password()  # <--- ESSA LINHA FORÇA O RESET A CADA INÍCIO (remova depois de logar)
 corrigir_coluna_foto()
 
 if 'user_data' not in st.session_state:
@@ -220,18 +199,8 @@ if st.session_state.user_data is None:
                     ).fetchone()
                 if user:
                     stored_username, stored_password, stored_tipo, senha_padrao = user
-                    
-                    # Debug temporário - remova depois de testar
-                    st.write("DEBUG - Tipo da senha no banco:", type(stored_password))
-                    st.write("DEBUG - Senha armazenada (primeiros 50 chars):", str(stored_password)[:50] if stored_password else "None")
-                    
-                    # Converte se for bytes
                     if isinstance(stored_password, (bytes, bytearray)):
-                        try:
-                            stored_password = stored_password.decode('utf-8')
-                        except:
-                            stored_password = ""
-                    
+                        stored_password = stored_password.decode('utf-8', errors='replace')
                     if check_password(password, stored_password):
                         st.session_state.user_data = {
                             "username": stored_username,
@@ -279,6 +248,7 @@ else:
         else:
             st.markdown(f"👤 **{nome_user.upper()}** ({tipo_user.upper()})")
         st.markdown("---")
+
     if st.session_state.forcar_troca_senha:
         st.title("Alterar Senha Inicial (obrigatório)")
         st.warning(f"Olá {nome_user.upper()}, defina uma nova senha agora.")
@@ -294,21 +264,20 @@ else:
                     st.error("Não use a senha inicial novamente.")
                 else:
                     hashed = hash_password(nova_senha)
-                    # Garante string
-                    if not isinstance(hashed, str):
-                        hashed = str(hashed)
+                    hashed = str(hashed)  # Garante que seja string pura
+                    st.write("DEBUG - Novo hash gerado (primeiros 50 chars):", hashed[:50])
                     try:
                         with sqlite3.connect(DB_NAME) as conn:
                             conn.execute("UPDATE usuarios SET password = ?, senha_padrao = 0 WHERE username = ?",
                                          (hashed, nome_user))
                             conn.commit()
-                        st.success("Senha alterada! Faça login novamente.")
+                        st.success("Senha alterada com sucesso! Faça login novamente com a nova senha.")
                         st.session_state.user_data = None
                         st.session_state.forcar_troca_senha = False
                         st.rerun()
                     except Exception as e:
-                        st.error(f"Erro ao salvar nova senha: {str(e)}")
-                        st.info("Tente novamente ou contate o administrador.")
+                        st.error(f"ERRO AO SALVAR NOVA SENHA: {str(e)}")
+                        st.info("Possível causa: problema no banco ou valor inválido. Tente uma senha mais simples (sem caracteres especiais) ou contate o suporte.")
     else:
         # Menus de navegação
         if tipo_user == "prestador":
@@ -473,7 +442,6 @@ else:
                                 conn.commit()
                                 st.success("Agendamento registrado com sucesso!")
                                 st.rerun()
-
         # ─── ATENDIMENTOS / MEUS AGENDAMENTOS ───────────────────────────────────────
         elif escolha in ["Atendimentos", "Meus Agendamentos"]:
             if tipo_user == "prestador":
@@ -527,7 +495,6 @@ else:
                         st.markdown("---")
                 else:
                     st.dataframe(df, use_container_width=True)
-
         # ─── PRESTADORES ────────────────────────────────────────────────────────────
         elif escolha == "Prestadores" and tipo_user in ["master", "adm", "recepção"]:
             st.title("Gestão de Prestadores")
@@ -635,7 +602,6 @@ else:
                                     if st.button("Cancelar", key=f"cancel_del_prest_{row['id']}"):
                                         st.session_state[f"show_confirm_del_prest_{row['id']}"] = False
                                         st.rerun()
-
         # ─── DIRETORIA ──────────────────────────────────────────────────────────────
         elif escolha == "Diretoria" and tipo_user in ["master", "adm", "recepção"]:
             st.title("Gestão da Diretoria")
@@ -779,7 +745,6 @@ else:
                                         st.error("Não foi possível resetar (problema com hash).")
                             else:
                                 st.info("Apenas Master pode excluir ou resetar senha.")
-
         # ─── IMPORTAR SÓCIOS ────────────────────────────────────────────────────────
         elif escolha == "Importar Sócios" and tipo_user in ["master", "adm"]:
             st.title("Importar Sócios e Dependentes")
@@ -833,7 +798,6 @@ else:
                             st.rerun()
                 except Exception as e:
                     st.error(f"Erro ao processar planilha: {str(e)}")
-
         # ─── RELATÓRIO DE SERVIÇOS ─────────────────────────────────────────────────
         elif escolha == "Relatório de Serviços" and tipo_user == "master":
             st.title("Relatório de Serviços")
