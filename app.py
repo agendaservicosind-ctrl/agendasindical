@@ -6,21 +6,8 @@ import unicodedata
 import base64
 import os
 import io
-
-try:
-    import bcrypt
-    BCRYPT_AVAILABLE = True
-except ImportError:
-    BCRYPT_AVAILABLE = False
-
-try:
-    from reportlab.lib.pagesizes import letter
-    from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph
-    from reportlab.lib.styles import getSampleStyleSheet
-    from reportlab.lib import colors
-    REPORTLAB_AVAILABLE = True
-except ImportError:
-    REPORTLAB_AVAILABLE = False
+import hashlib
+import secrets
 
 st.set_page_config(
     page_title="Sistema Sindicato",
@@ -50,6 +37,20 @@ HORARIOS = [f"{h:02d}:{m:02d}" for h in range(8, 18) for m in (0, 30)]
 
 SENHA_INICIAL = "Sindicato@2026!"
 
+# ================== FUNÇÕES DE SENHA (sem bcrypt - compatível com Cloud) ==================
+def hash_password(password: str) -> str:
+    salt = secrets.token_hex(16)
+    hashed = hashlib.sha256((salt + password).encode('utf-8')).hexdigest()
+    return f"{salt}${hashed}"
+
+def check_password(provided: str, stored: str) -> bool:
+    if '$' not in stored:
+        return stored.strip() == provided.strip()  # compatibilidade com senhas antigas em texto plano
+    salt, hashed = stored.split('$', 1)
+    provided_hashed = hashlib.sha256((salt + provided).encode('utf-8')).hexdigest()
+    return provided_hashed == hashed
+
+# ================== FUNÇÕES AUXILIARES ==================
 def normalize_for_db(text: str) -> str:
     if not text or not isinstance(text, str):
         return ""
@@ -59,25 +60,6 @@ def normalize_for_db(text: str) -> str:
 
 def normalize_matricula(mat: str) -> str:
     return str(mat or "").strip().replace(" ", "")
-
-def hash_password(password: str):
-    if BCRYPT_AVAILABLE:
-        return bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt(12))
-    else:
-        return password.encode('utf-8')
-
-def check_password(provided_password: str, stored_password) -> bool:
-    if BCRYPT_AVAILABLE and isinstance(stored_password, (bytes, bytearray)):
-        try:
-            return bcrypt.checkpw(provided_password.encode('utf-8'), stored_password)
-        except:
-            pass
-    stored_str = (
-        stored_password.decode('utf-8', errors='ignore')
-        if isinstance(stored_password, (bytes, bytearray))
-        else str(stored_password)
-    )
-    return stored_str.strip() == provided_password.strip()
 
 def limpar_cpf(valor):
     return "".join(c for c in str(valor or "") if c.isdigit())
@@ -90,6 +72,7 @@ def formatar_telefone(valor):
         return f"({valor[:2]}) {valor[2:6]}-{valor[6:]}"
     return valor
 
+# ================== BANCO DE DADOS ==================
 def init_db():
     with sqlite3.connect(DB_NAME) as conn:
         cursor = conn.cursor()
@@ -117,7 +100,7 @@ def init_db():
             CREATE TABLE IF NOT EXISTS usuarios (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 username TEXT UNIQUE NOT NULL,
-                password BLOB NOT NULL,
+                password TEXT NOT NULL,  -- alterado para TEXT (compatível com hashlib)
                 tipo_acesso TEXT NOT NULL,
                 senha_padrao INTEGER DEFAULT 1
             )
@@ -211,9 +194,6 @@ if 'forcar_troca_senha' not in st.session_state:
 if st.session_state.user_data is None:
     st.title("Login - Sistema Sindicato")
 
-    if not BCRYPT_AVAILABLE:
-        st.warning("⚠️ bcrypt não instalado → usando comparação em texto plano")
-
     with st.form("login_form"):
         username = st.text_input("Usuário")
         password = st.text_input("Senha", type="password")
@@ -247,6 +227,7 @@ if st.session_state.user_data is None:
                         st.error("Senha incorreta.")
                 else:
                     st.error("Usuário não encontrado.")
+
 else:
     user_info = st.session_state.user_data
     tipo_user = user_info["tipo"].lower()
@@ -329,7 +310,7 @@ else:
             st.session_state.user_data = None
             st.rerun()
 
-        # ─── AGENDAR (corrigido - sem textos "acordos" e "Unidade de caro") ────────
+        # ─── AGENDAR (limpo, sem textos indesejados) ─────────────────────────────────
         if escolha == "Agendar":
             st.title("Novo Agendamento")
 
