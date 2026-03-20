@@ -35,35 +35,40 @@ NIVEIS_ACESSO = ["Master", "ADM", "Recepção", "Prestador"]
 HORARIOS = [f"{h:02d}:{m:02d}" for h in range(8, 18) for m in (0, 30)]
 SENHA_INICIAL = "Sindicato@2026!"
 
-# ================== FUNÇÕES DE SENHA (corrigido para Streamlit Cloud) ==================
+# ================== FUNÇÕES DE SENHA (versão corrigida e robusta) ==================
 def hash_password(password: str) -> str:
     salt = secrets.token_hex(16)
     hashed = hashlib.sha256((salt + password).encode('utf-8')).hexdigest()
     return f"{salt}${hashed}"
 
 def check_password(provided: str, stored) -> bool:
-    # Correção principal: aceita bytes (comum no ambiente hospedado)
+    # Trata qualquer tipo que venha do banco (bytes é comum no Streamlit Cloud)
+    if stored is None:
+        return False
+    
     if isinstance(stored, (bytes, bytearray)):
-        stored = stored.decode('utf-8')
-    elif not isinstance(stored, str):
-        stored = str(stored)
-
-    provided = provided.strip()
-    stored = stored.strip() if stored else ""
+        try:
+            stored = stored.decode('utf-8')
+        except UnicodeDecodeError:
+            return False
+    
+    stored = str(stored).strip()
+    provided = str(provided).strip()
 
     if not stored:
         return False
 
+    # Senha antiga em texto plano
     if '$' not in stored:
-        return stored == provided  # compatibilidade com senhas antigas em texto plano
+        return stored == provided
 
+    # Formato salt$hash
     try:
         salt, hashed = stored.split('$', 1)
-        provided_hashed = hashlib.sha256((salt + provided).encode('utf-8')).hexdigest()
-        return provided_hashed == hashed
+        computed = hashlib.sha256((salt + provided).encode('utf-8')).hexdigest()
+        return computed == hashed
     except Exception:
         return False
-# =============================================================================
 
 # ================== FUNÇÕES AUXILIARES ==================
 def normalize_for_db(text: str) -> str:
@@ -107,11 +112,12 @@ def init_db():
             except sqlite3.OperationalError:
                 pass
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_matricula ON socios(matricula)")
+
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS usuarios (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 username TEXT UNIQUE NOT NULL,
-                password TEXT NOT NULL, -- alterado para TEXT (compatível com hashlib)
+                password TEXT NOT NULL,
                 tipo_acesso TEXT NOT NULL,
                 senha_padrao INTEGER DEFAULT 1
             )
@@ -176,6 +182,7 @@ def create_default_master_if_needed():
                 VALUES ('master', ?, 'Master', 1)
             """, (senha_hash,))
             conn.commit()
+            st.info("Usuário master criado com senha padrão (Sindicato@2026!)")
 
 def corrigir_coluna_foto():
     with sqlite3.connect(DB_NAME) as conn:
@@ -215,10 +222,13 @@ if st.session_state.user_data is None:
                 if user:
                     stored_username, stored_password, stored_tipo, senha_padrao = user
                     
-                    # Proteção extra contra bytes (muito comum no Streamlit Cloud)
+                    # Proteção contra bytes (principal causa do erro no Cloud)
                     if isinstance(stored_password, (bytes, bytearray)):
-                        stored_password = stored_password.decode('utf-8')
-
+                        try:
+                            stored_password = stored_password.decode('utf-8')
+                        except:
+                            stored_password = ""
+                    
                     if check_password(password, stored_password):
                         st.session_state.user_data = {
                             "username": stored_username,
@@ -306,7 +316,7 @@ else:
         if escolha == "Sair":
             st.session_state.user_data = None
             st.rerun()
-        # ─── AGENDAR (limpo, sem textos indesejados) ─────────────────────────────────
+        # ─── AGENDAR ────────────────────────────────────────────────────────────────
         if escolha == "Agendar":
             st.title("Novo Agendamento")
             busca = st.text_input("Busca do Sócio ou Dependente (Matrícula ou Nome)")
@@ -885,6 +895,4 @@ else:
                         file_name=f"relatorio_servicos_{date.today().strftime('%Y-%m-%d')}.xlsx",
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                     )
-                    # Nota: REPORTLAB_AVAILABLE não está definido no código → removi o bloco PDF ou adicione a importação + variável
-                    # Se quiser PDF, adicione no topo: from reportlab... e defina REPORTLAB_AVAILABLE = True após try/except import
-                    st.warning("Para gerar PDF, instale reportlab e ajuste o código (reportlab não está disponível aqui).")
+                    st.warning("Para gerar PDF, instale reportlab: pip install reportlab")
