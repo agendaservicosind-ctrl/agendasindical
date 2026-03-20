@@ -1,1217 +1,1050 @@
-importar streamlit como st
-
-importar sqlite3
-
+import streamlit as st
+import sqlite3
 import pandas as pd
+from datetime import date, timedelta
+import unicodedata
+import base64
+import os
+import io
 
-Importe data e hora a partir de datetime e timedelta.
+try:
+    import bcrypt
+    BCRYPT_AVAILABLE = True
+except ImportError:
+    BCRYPT_AVAILABLE = False
 
-importar dados unicode
-
-importar base64
-
-importar os
-
-importar io
-
-import hashlib
-
-importar segredos
-
-
+try:
+    from reportlab.lib.pagesizes import letter
+    from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph
+    from reportlab.lib.styles import getSampleStyleSheet
+    from reportlab.lib import colors
+    REPORTLAB_AVAILABLE = True
+except ImportError:
+    REPORTLAB_AVAILABLE = False
 
 st.set_page_config(
-
-    título_da_página="Sistema Sindical",
-
-    layout="amplo",
-
+    page_title="Sistema Sindicato",
+    layout="wide",
     page_icon="logo.png",
-
-    initial_sidebar_state="expandido"
-
+    initial_sidebar_state="expanded"
 )
 
-
-
 DB_DIR = os.path.dirname(os.path.abspath(__file__))
+DB_NAME = os.path.join(DB_DIR, "sindicato.db")
 
-DB_NAME = os.path.join(DB_DIR, "union.db")
-
-
-
-SERVIÇOS = [
-
-    "Odontologia", "Psicologia", "Direito", "Cabeleireiro", "Manicure"
-
+SERVICOS = [
+    "Odontologia", "Psicologia", "Jurídico", "Cabeleireiro", "Manicure",
     "Eletricista", "Jardineiro", "Pedreiro"
-
 ]
-
-
 
 UNIDADES = [
-
-    "Quartel-General de Jundiaí",
-
+    "Sede Jundiaí",
     "Sub Sede Franco da Rocha",
-
-    "Jundiaí externo",
-
-    "Franco da Rocha externo"
-
+    "Externo Jundiaí",
+    "Externo Franco da Rocha"
 ]
 
+NIVEIS_ACESSO = ["Master", "ADM", "Recepção", "Prestador"]
 
+HORARIOS = [f"{h:02d}:{m:02d}" for h in range(8, 18) for m in (0, 30)]
 
-NIVEIS_ACESSO = ["Mestre", "ADM", "Recepção", "Provedor"]
-
-SCHEDULES = [f"{h:02d}:{m:02d}" para h em range(8, 18) para m em (0, 30)]
-
-SENHA_INICIAL = "União@2026!"
-
-
-
-# ================= FUNÇÕES DE SENHA ==================
-
-def hash_password(password: str) -> str:
-
-    sal = secrets.token_hex(16)
-
-    hash = hashlib.sha256((salt + password).encode('utf-8')).hexdigest()
-
-    retornar f"{salt}${hashed}"
-
-
-
-def verificar_senha(fornecido: str, armazenado) -> bool:
-
-    Se o valor armazenado for None:
-
-        retornar Falso
-
-    se isinstance(stored, (bytes, bytearray)):
-
-        tentar:
-
-            armazenado = armazenado.decodificar('utf-8')
-
-        exceto:
-
-            retornar Falso
-
-    armazenado = str(armazenado).strip()
-
-    fornecido = str(fornecido).strip()
-
-    se não estiver armazenado:
-
-        retornar Falso
-
-    Se '$' não estiver armazenado:
-
-        retorno armazenado == fornecido
-
-    tentar:
-
-        sal, hash = armazenado.split('$', 1)
-
-        computado = hashlib.sha256((salt + fornecido).encode('utf-8')).hexdigest()
-
-        retornar calculado == hash
-
-    exceto:
-
-        retornar Falso
-
-
-
-# ================== FUNÇÕES AUXILIARES ==================
+SENHA_INICIAL = "Sindicato@2026!"
 
 def normalize_for_db(text: str) -> str:
-
-    se não for texto ou não for uma instância de (texto, str):
-
-        retornar ""
-
-    texto = unicodedata.normalize('NFD', texto.strip())
-
-    texto = ''.join(c para c em texto se unicodedata.category(c) != 'Mn')
-
-    retornar texto.maiúsculo()
-
-
+    if not text or not isinstance(text, str):
+        return ""
+    text = unicodedata.normalize('NFD', text.strip())
+    text = ''.join(c for c in text if unicodedata.category(c) != 'Mn')
+    return text.upper()
 
 def normalize_matricula(mat: str) -> str:
+    return str(mat or "").strip().replace(" ", "")
 
-    retornar str(mat ou "").strip().replace(" ", "")
+def hash_password(password: str):
+    if BCRYPT_AVAILABLE:
+        return bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt(12))
+    else:
+        return password.encode('utf-8')
 
-
+def check_password(provided_password: str, stored_password) -> bool:
+    if BCRYPT_AVAILABLE and isinstance(stored_password, (bytes, bytearray)):
+        try:
+            return bcrypt.checkpw(provided_password.encode('utf-8'), stored_password)
+        except:
+            pass
+    stored_str = (
+        stored_password.decode('utf-8', errors='ignore')
+        if isinstance(stored_password, (bytes, bytearray))
+        else str(stored_password)
+    )
+    return stored_str.strip() == provided_password.strip()
 
 def limpar_cpf(valor):
+    return "".join(c for c in str(valor or "") if c.isdigit())
 
-    retornar "".join(c para c em str(valor ou "") se c.édigito())
-
-
-
-def format_phone(value):
-
+def formatar_telefone(valor):
     valor = limpar_cpf(valor)
-
-    se len(valor) == 11:
-
-        retornar f"({valor[:2]}) {valor[2:7]}-{valor[7:]}"
-
-    se len(valor) == 10:
-
-        retornar f"({valor[:2]}) {valor[2:6]}-{valor[6:]}"
-
-    valor de retorno
-
-
-
-# ================== BANCO DE DADOS ==================
+    if len(valor) == 11:
+        return f"({valor[:2]}) {valor[2:7]}-{valor[7:]}"
+    if len(valor) == 10:
+        return f"({valor[:2]}) {valor[2:6]}-{valor[6:]}"
+    return valor
 
 def init_db():
-
-    com sqlite3.connect(DB_NAME) como conexão:
-
+    with sqlite3.connect(DB_NAME) as conn:
         cursor = conn.cursor()
 
         cursor.execute('''
-
-            CRIAR TABELA SE NÃO EXISTIR parceiros (
-
-                TEXTO de registro,
-
-                nome TEXTO,
-
-                Empresa de TEXTO,
-
-                texto cpf,
-
-                SMS,
-
-                Tipo de texto padrão: 'Título'
-
+            CREATE TABLE IF NOT EXISTS socios (
+                matricula TEXT,
+                nome TEXT,
+                empresa TEXT,
+                cpf TEXT,
+                telefone TEXT,
+                tipo TEXT DEFAULT 'Titular'
             )
-
         ''')
 
-        para coluna em ['company', 'cpf', 'phone', 'type']:
+        for coluna in ['empresa', 'cpf', 'telefone', 'tipo']:
+            try:
+                cursor.execute(f"ALTER TABLE socios ADD COLUMN {coluna} TEXT")
+            except sqlite3.OperationalError:
+                pass
 
-            tentar:
-
-                cursor.execute(f"ALTER TABLE partners ADD COLUMN {coluna} TEXT")
-
-            exceto sqlite3.OperationalError:
-
-                passar
-
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_matricula ON associates(matricula)")
-
-
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_matricula ON socios(matricula)")
 
         cursor.execute('''
-
-            CRIAR TABELA SE NÃO EXISTIR usuários (
-
+            CREATE TABLE IF NOT EXISTS usuarios (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-
-                nome de usuário TEXTO ÚNICO NÃO NULO,
-
-                senha TEXTO NÃO NULO,
-
-                access_type TEXT NOT NULL,
-
-                senha_padrao INTEIRO PADRÃO 1
-
+                username TEXT UNIQUE NOT NULL,
+                password BLOB NOT NULL,
+                tipo_acesso TEXT NOT NULL,
+                senha_padrao INTEGER DEFAULT 1
             )
-
         ''')
 
         cursor.execute('''
-
-            CRIAR TABELA SE NÃO EXISTIR provedores (
-
+            CREATE TABLE IF NOT EXISTS prestadores (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-
-                nome TEXTO NÃO NULO,
-
-                texto cpf,
-
-                unidade TEXTO NÃO NULO,
-
-                tipo_de_serviço TEXTO NÃO NULO
-
+                nome TEXT NOT NULL,
+                cpf TEXT,
+                unidade TEXT NOT NULL,
+                tipo_servico TEXT NOT NULL
             )
-
         ''')
 
         cursor.execute('''
-
-            CRIAR TABELA SE NÃO EXISTIR diretórios (
-
+            CREATE TABLE IF NOT EXISTS diretores (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-
-                nome TEXTO NÃO NULO,
-
-                texto cpf,
-
-                área_responsavel TEXTO,
-
-                nível_de_acesso TEXTO,
-
-                nome de usuário TEXTO,
-
+                nome TEXT NOT NULL,
+                cpf TEXT,
+                area_responsavel TEXT,
+                nivel_acesso TEXT,
+                username TEXT,
                 foto BLOB
-
             )
-
         ''')
 
         cursor.execute('''
-
-            CRIAR TABELA SE NÃO EXISTIR agendas (
-
+            CREATE TABLE IF NOT EXISTS agendamentos (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-
-                texto de registro de parceiros,
-
-                nome_socio TEXTO NÃO NULO,
-
-                texto da empresa parceira,
-
-                texto do parceiro de telefone,
-
-                service_type TEXT NOT NULL,
-
-                unidade TEXTO NÃO NULO,
-
-                prestador_nome TEXTO NÃO NULO,
-
-                data_atendimento TEXTO NÃO NULO,
-
-                agendar TEXTO NÃO NULO,
-
-                status TEXTO PADRÃO 'Pendente',
-
-                texto do diretor do candidato NÃO NULO,
-
-                servant_em TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-
+                matricula_socio TEXT,
+                nome_socio TEXT NOT NULL,
+                empresa_socio TEXT,
+                telefone_socio TEXT,
+                tipo_servico TEXT NOT NULL,
+                unidade TEXT NOT NULL,
+                prestador_nome TEXT NOT NULL,
+                data_atendimento TEXT NOT NULL,
+                horario TEXT NOT NULL,
+                status TEXT DEFAULT 'Pendente',
+                diretor_solicitante TEXT NOT NULL,
+                criado_em TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 data_realizado TIMESTAMP,
-
-                validado_por TEXTO
-
+                validado_por TEXT
             )
-
         ''')
 
-        tentar:
+        try:
+            cursor.execute("ALTER TABLE agendamentos ADD COLUMN data_realizado TIMESTAMP")
+        except:
+            pass
+        try:
+            cursor.execute("ALTER TABLE agendamentos ADD COLUMN validado_por TEXT")
+        except:
+            pass
 
-            cursor.execute("ALTER TABLE agendas ADD COLUMN data_made TIMESTAMP")
+        conn.commit()
 
-        exceto:
-
-            passar
-
-        tentar:
-
-            cursor.execute("ALTER TABLE agendas ADD COLUMN validated_by TEXT")
-
-        exceto:
-
-            passar
-
-        conexão.commit()
-
-
+def create_default_master_if_needed():
+    with sqlite3.connect(DB_NAME) as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT COUNT(*) FROM usuarios WHERE username = 'master'")
+        if cursor.fetchone()[0] == 0:
+            senha_hash = hash_password(SENHA_INICIAL)
+            cursor.execute("""
+                INSERT INTO usuarios (username, password, tipo_acesso, senha_padrao)
+                VALUES ('master', ?, 'Master', 1)
+            """, (senha_hash,))
+            conn.commit()
 
 def corrigir_coluna_foto():
-
-    com sqlite3.connect(DB_NAME) como conexão:
-
+    with sqlite3.connect(DB_NAME) as conn:
         cursor = conn.cursor()
-
-        cursor.execute("PRAGMA table_info(directories)")
-
+        cursor.execute("PRAGMA table_info(diretores)")
         colunas = {col[1] for col in cursor.fetchall()}
-
-        Se 'foto' não estiver em colunas:
-
-            cursor.execute("ALTER TABLE directors ADD COLUMN photo BLOB")
-
-            conexão.commit()
-
-
+        if 'foto' not in colunas:
+            cursor.execute("ALTER TABLE diretores ADD COLUMN foto BLOB")
+            conn.commit()
 
 init_db()
+create_default_master_if_needed()
+corrigir_coluna_foto()
 
-foto_coluna_correta()
-
-
-
-se 'user_data' não estiver em st.session_state:
-
+if 'user_data' not in st.session_state:
     st.session_state.user_data = None
 
-se 'forcar_troca_senha' não estiver em st.session_state:
+if 'forcar_troca_senha' not in st.session_state:
+    st.session_state.forcar_troca_senha = False
 
-    st.session_state.forcar_troca_senha = Falso
+# ─── LOGIN ──────────────────────────────────────────────────────────────────────
+if st.session_state.user_data is None:
+    st.title("Login - Sistema Sindicato")
 
+    if not BCRYPT_AVAILABLE:
+        st.warning("⚠️ bcrypt não instalado → usando comparação em texto plano")
 
+    with st.form("login_form"):
+        username = st.text_input("Usuário")
+        password = st.text_input("Senha", type="password")
 
-# ─── LOGIN ───────────────────────────────────── ─────────────────────────────────────
-
-Se st.session_state.user_data for None:
-
-    st.title("Login - Sistema Union")
-
-    com st.form("login_form"):
-
-        nome_de_usuário = st.text_input("Usuário")
-
-        senha = st.text_input("Senha", type="senha")
-
-        if st.form_submit_button("Enter", type="primary"):
-
-            se não username.strip():
-
-                st.error("Digite o nome de usuário.")
-
-            senão se não for senha:
-
+        if st.form_submit_button("Entrar", type="primary"):
+            if not username.strip():
+                st.error("Digite o usuário.")
+            elif not password:
                 st.error("Digite a senha.")
-
-            outro:
-
-                com sqlite3.connect(DB_NAME) como conexão:
-
-                    usuário = conn.execute(
-
-                        "SELECT username, password, access_type, senha_padrao FROM users WHERE UPPER(username) = ?",
-
+            else:
+                with sqlite3.connect(DB_NAME) as conn:
+                    user = conn.execute(
+                        "SELECT username, password, tipo_acesso, senha_padrao FROM usuarios WHERE UPPER(username) = ?",
                         (username.strip().upper(),)
-
                     ).fetchone()
 
-                se o usuário:
+                if user:
+                    stored_username, stored_password, stored_tipo, senha_padrao = user
 
-                    nome_usuário_armazenado, senha_armazenada, tipo_armazenado, senha_padrao = usuário
-
-                    se isinstance(stored_password, (bytes, bytearray)):
-
-                        senha_armazenada = senha_armazenada.decode('utf-8', erros='replace')
-
-                    se check_password(senha, senha_armazenada):
-
+                    if check_password(password, stored_password):
                         st.session_state.user_data = {
-
-                            "nome de usuário": nome_de_usuário_armazenado,
-
-                            "tipo": stored_type.strip().lower(),
-
+                            "username": stored_username,
+                            "tipo": stored_tipo.strip().lower(),
                         }
-
                         st.session_state.forcar_troca_senha = bool(senha_padrao)
-
-                        se senha_padrao:
-
-                            st.info("Sua senha está em branco. Por motivos de segurança, altere-a agora.")
-
-                        st.success("Login realizado com sucesso!")
-
+                        if senha_padrao:
+                            st.info("Sua senha é a inicial. Por segurança, altere-a agora.")
+                        st.success("Login realizado!")
                         st.rerun()
-
-                    outro:
-
+                    else:
                         st.error("Senha incorreta.")
-
-                outro:
-
+                else:
                     st.error("Usuário não encontrado.")
-
-outro:
-
+else:
     user_info = st.session_state.user_data
+    tipo_user = user_info["tipo"].lower()
+    nome_user = user_info["username"]
 
-    user_type = user_info["type"].lower()
-
-    nome_usuário = informações_do_usuário["nome de usuário"]
-
-    photo_bytes = Nenhum
-
-    com sqlite3.connect(DB_NAME) como conexão:
-
+    foto_bytes = None
+    with sqlite3.connect(DB_NAME) as conn:
         cursor = conn.cursor()
+        cursor.execute("SELECT foto FROM diretores WHERE username = ?", (nome_user,))
+        result = cursor.fetchone()
+        if result and result[0]:
+            foto_bytes = result[0]
 
-        cursor.execute("SELECT photo FROM directores WHERE username = ?", (nome_user,))
-
-        resultado = cursor.fetchone()
-
-        se resultado e resultado[0]:
-
-            photo_bytes = result[0]
-
-    com st.sidebar:
-
-        se foto_bytes:
-
+    with st.sidebar:
+        if foto_bytes:
             foto_base64 = base64.b64encode(foto_bytes).decode('utf-8')
-
             col_foto, col_texto = st.columns([1, 3])
-
-            com col_foto:
-
+            with col_foto:
                 st.markdown(
-
-                    F"""
-
+                    f"""
                     <div style="text-align:center; margin:10px 0;">
-
-                        <img src="data:image/jpeg;base64,{photo_base64}"
-
-                             estilo="largura:80px; altura:80px; raio da borda:50%;
-
-                                    object-fit:cover; border:3px solid #e0e0e0;
-
+                        <img src="data:image/jpeg;base64,{foto_base64}" 
+                             style="width:80px; height:80px; border-radius:50%; 
+                                    object-fit:cover; border:3px solid #e0e0e0; 
                                     box-shadow:0 4px 12px rgba(0,0,0,0.15);">
-
                     </div>
-
-                    "",
-
+                    """,
                     unsafe_allow_html=True
-
                 )
-
-            com col_texto:
-
+            with col_texto:
                 st.markdown(f"<h4 style='margin:12px 0 0 0;'>{nome_user.upper()}</h4>", unsafe_allow_html=True)
-
-                st.markdown(f"<small>({user_type.upper()})</small>", unsafe_allow_html=True)
-
-        outro:
-
-            st.markdown(f"👤 **{nome_usuário.upper()}** ({tipo_usuário.upper()})")
+                st.markdown(f"<small>({tipo_user.upper()})</small>", unsafe_allow_html=True)
+        else:
+            st.markdown(f"👤 **{nome_user.upper()}** ({tipo_user.upper()})")
 
         st.markdown("---")
 
-
-
     if st.session_state.forcar_troca_senha:
-
         st.title("Alterar Senha Inicial (obrigatório)")
-
         st.warning(f"Olá {nome_user.upper()}, defina uma nova senha agora.")
 
-        com st.form("form_troca_senha"):
+        with st.form("form_troca_senha"):
+            nova_senha = st.text_input("Nova senha", type="password")
+            confirma = st.text_input("Confirmar nova senha", type="password")
 
-            nova_senha = st.text_input("Nova senha", type="senha")
-
-            confirm = st.text_input("Confirme a nova senha", type="password")
-
-            if st.form_submit_button("Confirm", type="primary"):
-
-                se não for nova_senha ou len(nova_senha) < 6:
-
-                    st.error("A deve ter pelo menos 6 caracteres.")
-
-                elif nova_senha != confirm:
-
+            if st.form_submit_button("Confirmar", type="primary"):
+                if not nova_senha or len(nova_senha) < 6:
+                    st.error("A senha deve ter pelo menos 6 caracteres.")
+                elif nova_senha != confirma:
                     st.error("As senhas não coincidem.")
-
-                elif nova_senha == SENHA INICIAL:
-
+                elif nova_senha == SENHA_INICIAL:
                     st.error("Não use a senha inicial novamente.")
-
-                outro:
-
-                    hash = hash_senha(nova_senha)
-
-                    hashed = str(hashed) # Garante que seja uma string pura
-
-                    st.write("DEBUG - Novo hash gerado (primeiros 50 caracteres):", hashed[:50])
-
-                    tentar:
-
-                        com sqlite3.connect(DB_NAME) como conexão:
-
-                            conn.execute("UPDATE users SET password = ?, senha_padrao = 0 WHERE username = ?",
-
-                                         (hash, nome de usuário)
-
-                            conexão.commit()
-
-                        st.success("Senha alterada com sucesso! Faça login novamente com uma nova senha.")
-
-                        st.session_state.user_data = None
-
-                        st.session_state.forcar_troca_senha = Falso
-
-                        st.rerun()
-
-                    exceto Exception como e:
-
-                        st.error(f"ERRO AO SALVAR NOVA SENHA: {str(e)}")
-
-                        st.info("Possível causa: problema com o banco ou valor inválido. Por favor, utilize métodos mais simples (sem caracteres especiais) ou entre em contato conosco para obter suporte.")
-
-    outro:
-
-        # Menus de Navegação
-
-        se tipo_user == "prestador":
-
-            menu = ["Minhas Agendas", "Sair"]
-
-        outro:
-
-            menu = ["Programação", "Participantes"]
-
-            se user_type estiver em ["master", "adm", "reception"]:
-
-                menu.extend(["Provedores", "Diretório"])
-
-            se user_type estiver em ["master", "adm"]:
-
-                menu.append("Parceiros de Importação")
-
-            se user_type == "master":
-
-                menu.extend(["Relatório de Serviço", "Redefinir Senhas"])
-
+                else:
+                    hashed = hash_password(nova_senha)
+                    with sqlite3.connect(DB_NAME) as conn:
+                        conn.execute("UPDATE usuarios SET password = ?, senha_padrao = 0 WHERE username = ?",
+                                     (hashed, nome_user))
+                        conn.commit()
+                    st.success("Senha alterada! Faça login novamente.")
+                    st.session_state.user_data = None
+                    st.session_state.forcar_troca_senha = False
+                    st.rerun()
+    else:
+        # Menus de navegação
+        if tipo_user == "prestador":
+            menu = ["Meus Agendamentos", "Sair"]
+        else:
+            menu = ["Agendar", "Atendimentos"]
+            if tipo_user in ["master", "adm", "recepção"]:
+                menu.extend(["Prestadores", "Diretoria"])
+            if tipo_user in ["master", "adm"]:
+                menu.append("Importar Sócios")
+            if tipo_user == "master":
+                menu.extend(["Relatório de Serviços", "Redefinir Senhas"])
             menu.append("Sair")
 
         escolha = st.sidebar.radio("Navegação", menu)
 
-        se escolha == "Sair":
-
+        if escolha == "Sair":
             st.session_state.user_data = None
-
             st.rerun()
 
+        # ─── AGENDAR (corrigido - sem textos "acordos" e "Unidade de caro") ────────
+        if escolha == "Agendar":
+            st.title("Novo Agendamento")
 
+            busca = st.text_input("Busca do Sócio ou Dependente (Matrícula ou Nome)")
 
-        # ─── CRONOGRAMA ───────────────────────────────── ─────────────────────────────────
+            socio_encontrado = None
+            if busca.strip():
+                busca_limpa = normalize_matricula(busca.strip())
+                busca_nome = f"%{normalize_for_db(busca.strip())}%"
 
-        se escolha == "Agenda":
-
-            st.title("Nova Agenda")
-
-            pesquisa = st.text_input("Pesquisar parceiro ou dependente (registro ou nome)")
-
-            parceiro_encontrado = Nenhum
-
-            se busca.strip():
-
-                clean_search = normalize_matricula(search.strip())
-
-                search_nome = f"%{normalize_for_db(search.strip())}%"
-
-                com sqlite3.connect(DB_NAME) como conexão:
-
-                    linhas = conn.execute("""
-
-                        SELECIONE registro, nome, empresa, telefone, tipo
-
-                        DE parceiros
-
-                        ONDE matrícula = ?
-
-                        ENCOMENDAR POR
-
-                            CASO QUANDO tipo = 'Holder' ENTÃO 0 SENÃO 1 FIM,
-
+                with sqlite3.connect(DB_NAME) as conn:
+                    rows = conn.execute("""
+                        SELECT matricula, nome, empresa, telefone, tipo
+                        FROM socios 
+                        WHERE matricula = ?
+                        ORDER BY 
+                            CASE WHEN tipo = 'Titular' THEN 0 ELSE 1 END,
                             nome
+                    """, (busca_limpa,)).fetchall()
 
-                    "", (find_find,)).fetchall()
-
-                    se não houver linhas:
-
-                        linhas = conn.execute("""
-
-                            SELECIONE registro, nome, empresa, telefone, tipo
-
-                            DE parceiros
-
-                            ONDE UPPER(nome) COMO? OU registro COMO?
-
-                            ENCOMENDAR POR
-
-                                CASO QUANDO tipo = 'Holder' ENTÃO 0 SENÃO 1 FIM,
-
+                    if not rows:
+                        rows = conn.execute("""
+                            SELECT matricula, nome, empresa, telefone, tipo
+                            FROM socios 
+                            WHERE UPPER(nome) LIKE ? OR matricula LIKE ?
+                            ORDER BY 
+                                CASE WHEN tipo = 'Titular' THEN 0 ELSE 1 END,
                                 nome
+                        """, (busca_nome, f"%{busca_limpa}%")).fetchall()
 
-                        """, (search_nome, f"%{search_limpa}%")).fetchall()
-
-                se houver linhas:
-
+                if rows:
                     st.info(f"Encontrados {len(rows)} registros.")
-
-                    se len(linhas) == 1:
-
-                        parceiro_encontrado = linhas[0]
-
-                        st.success(f"Encontrado: {found_partner[1]} ({found_partner[4]})")
-
-                    outro:
-
+                    if len(rows) == 1:
+                        socio_encontrado = rows[0]
+                        st.success(f"Encontrado: {socio_encontrado[1]} ({socio_encontrado[4]})")
+                    else:
                         opcoes = []
-
-                        para r em linhas:
-
-                            text_type = "Proprietário" se r[4] == "Proprietário" senão "Dependente"
-
-                            opcoes.append(f"{r[1]} ({text_type}) – Matr. {r[0]}")
+                        for r in rows:
+                            tipo_texto = "Titular" if r[4] == "Titular" else "Dependente"
+                            opcoes.append(f"{r[1]} ({tipo_texto}) – Matr. {r[0]}")
 
                         escolha_idx = st.radio(
-
-                            "Selecione o que você vai usar ou o serviço:"
-
-                            intervalo(comprimento(opcoes)),
-
+                            "Selecione quem vai utilizar o serviço:",
+                            range(len(opcoes)),
                             format_func=lambda i: opcoes[i],
-
-                            índice=0
-
+                            index=0
                         )
+                        socio_encontrado = rows[escolha_idx]
+                else:
+                    st.warning("Nenhum sócio ou dependente encontrado.")
 
-                        parceiro_encontrado = linhas[escolha_idx]
-
-                outro:
-
-                    st.warning("Nenhum parceiro ou dependente encontrado.")
-
-            se socio_encontrado:
-
-                mat, nome_def, emp_def, tel_def_db, type_pessoa = parceiro_fundado
-
-                tel_def = format_telefone(tel_def_db) se tel_def_db senão ""
-
-                campos_desativados = Verdadeiro
-
-                nao_associado = Falso
-
-                st.caption(f"**Tipo:** {type_pessoa}")
-
-            senão se search.strip():
-
-                tapete = "N/A"
-
+            if socio_encontrado:
+                mat, nome_def, emp_def, tel_def_db, tipo_pessoa = socio_encontrado
+                tel_def = formatar_telefone(tel_def_db) if tel_def_db else ""
+                campos_disabled = True
+                nao_associado = False
+                st.caption(f"**Tipo:** {tipo_pessoa}")
+            elif busca.strip():
+                mat = "N/A"
                 nome_def = emp_def = tel_def = ""
-
-                campos_desativados = Falso
-
+                campos_disabled = False
                 nao_associado = True
-
-            outro:
-
+            else:
                 mat = nome_def = emp_def = tel_def = ""
-
-                campos_desativados = Falso
-
-                nao_associado = Falso
+                campos_disabled = False
+                nao_associado = False
 
             st.markdown("---")
 
             col1, col2 = st.columns(2)
 
-            serv_default = st.session_state.get('agendamento_servico', SERVICES[0])
-
-            Se serv_default não estiver em SERVICES:
-
-                serv_default = SERVICES[0]
-
+            serv_default = st.session_state.get('servico_agendamento', SERVICOS[0])
+            if serv_default not in SERVICOS:
+                serv_default = SERVICOS[0]
             servico = col1.selectbox("Serviço solicitado", SERVICOS, index=SERVICOS.index(serv_default))
+            st.session_state.servico_agendamento = servico
 
-            st.session_state.servico_agendamento = serviço
-
-            uni_default = st.session_state.get('agendamento_unit', UNITS[0])
-
-            se uni_default não estiver em UNITS:
-
+            uni_default = st.session_state.get('unidade_agendamento', UNIDADES[0])
+            if uni_default not in UNIDADES:
                 uni_default = UNIDADES[0]
+            unidade = col2.selectbox("Unidade de atendimento", UNIDADES, index=UNIDADES.index(uni_default))
+            st.session_state.unidade_agendamento = unidade
 
-            unidade = col2.selectbox("Unidade de Serviço", UNIDADES, índice=UNITAS.index(uni_default))
-
-            st.session_state.unite_agendamento = unidade
-
-            com sqlite3.connect(DB_NAME) como conexão:
-
+            with sqlite3.connect(DB_NAME) as conn:
                 serv_norm = normalize_for_db(servico)
+                uni_norm = normalize_for_db(unidade)
 
-                uni_norm = normalizar_para_db(unit)
+                if "Externo" in unidade:
+                    query = "SELECT nome FROM prestadores WHERE tipo_servico = ? ORDER BY nome"
+                    params = (serv_norm,)
+                else:
+                    query = "SELECT nome FROM prestadores WHERE unidade = ? AND tipo_servico = ? ORDER BY nome"
+                    params = (uni_norm, serv_norm)
 
-                se "Externo" na unidade:
+                result = conn.execute(query, params).fetchall()
+                lista_prestadores = [r[0].strip() for r in result if r and r[0] and r[0].strip()]
 
-                    consulta = "SELECT nome FROM providers WHERE service_type = ? ORDER BY nome"
-
-                    parâmetros = (serv_norm,)
-
-                outro:
-
-                    consulta = "SELECT nome FROM providers WHERE unit = ? AND service_type = ? ORDER BY nome"
-
-                    parâmetros = (norma_uni, norma_serv)
-
-                resultado = conn.execute(query, params).fetchall()
-
-                lista_provedor = [r[0].strip() para r em resultado se r e r[0] e r[0].strip()]
-
-            se lista_prestadores:
-
-                perst_default = st.session_state.get('agendamento_provider', provider_list[0])
-
-                se perst_default não estiver em provider_list:
-
-                    perst_default = lender_list[0]
-
-                provedor = st.selectbox("Credor / Responsável", list_provedores,
-
-                                         index=list_providers.index(prest_default))
-
-                st.session_state.prestador_agendamento = provedor
-
-            outro:
-
-                st.warning(f"Nenhum provedor encontrado para {servico} em {unite}.")
-
-                credor = Nenhum
+            if lista_prestadores:
+                prest_default = st.session_state.get('prestador_agendamento', lista_prestadores[0])
+                if prest_default not in lista_prestadores:
+                    prest_default = lista_prestadores[0]
+                prestador = st.selectbox("Prestador / Responsável", lista_prestadores,
+                                         index=lista_prestadores.index(prest_default))
+                st.session_state.prestador_agendamento = prestador
+            else:
+                st.warning(f"Nenhum prestador encontrado para {servico} na {unidade}.")
+                prestador = None
 
             st.markdown("---")
 
-            com st.form("form_agendamento", clear_on_submit=True):
-
+            with st.form("form_agendamento", clear_on_submit=True):
                 col1, col2 = st.columns(2)
 
-                nome = col1.text_input("Nome completo", value=nome_def, disabled=fields_disabled)
-
-                empresa = col2.text_input("Empresa / Local de Trabalho", value=emp_def, disabled=campos_disabled)
-
+                nome = col1.text_input("Nome completo", value=nome_def, disabled=campos_disabled)
+                empresa = col2.text_input("Empresa / Local de trabalho", value=emp_def, disabled=campos_disabled)
                 telefone_raw = col1.text_input("Telefone para contato", value=tel_def, disabled=campos_disabled)
-
                 telefone = limpar_cpf(telefone_raw)
 
-                data_atendimento = col2.date_input("Dados do atendimento", min_value=date.today(),
+                data_atendimento = col2.date_input("Data do atendimento", min_value=date.today(),
+                                                   max_value=date.today() + timedelta(days=120))
 
-                                                   valor_máximo=data.hoje() + timedelta(dias=120))
+                horario = col1.selectbox("Horário disponível", HORARIOS)
 
-                agendamento = col1.selectbox("Agendamentos disponíveis", HORÁRIOS)
+                diretor_solicitante = col2.text_input("Diretor solicitante", value=nome_user, disabled=True)
 
-                requesting_director = col2.text_input("Requesting director", value=nome_user, disabled=True)
+                pode_agendar_manual = tipo_user in ["master", "adm", "recepção"]
+                submit_disabled = (nao_associado and not pode_agendar_manual) or (prestador is None)
 
-                pode_agendar_manual = user_type in ["master", "adm", "recepção"]
-
-                submit_disabled = (nao_associado e não pode_agendar_manual) ou (provider is None)
-
-                se não_associado e não pode_agendar_manual:
-
-                    st.warning("Somente o Mestre, o Administrador Adjunto ou a Recepção podem agendar para não-funcionários.")
+                if nao_associado and not pode_agendar_manual:
+                    st.warning("Apenas Master, ADM ou Recepção podem agendar para não associados.")
 
                 if st.form_submit_button("Confirmar Agendamento", type="primary", disabled=submit_disabled):
-
-                    se não name.strip():
-
+                    if not nome.strip():
                         st.error("Nome obrigatório.")
-
-                    elifθr é Nenhum:
-
-                        st.error("Por favor, selecione um provedor válido.")
-
-                    outro:
-
+                    elif prestador is None:
+                        st.error("Selecione um prestador válido.")
+                    else:
                         data_iso = data_atendimento.strftime("%Y-%m-%d")
 
-                        com sqlite3.connect(DB_NAME) como conexão:
-
+                        with sqlite3.connect(DB_NAME) as conn:
                             conflito = conn.execute("""
+                                SELECT 1 FROM agendamentos 
+                                WHERE prestador_nome = ? 
+                                  AND data_atendimento = ? 
+                                  AND horario = ?
+                                  AND status NOT IN ('Cancelado', 'Realizado')
+                            """, (prestador, data_iso, horario)).fetchone()
 
-                                SELECIONE 1 DE agendamentos
-
-                                ONDE prestador_nome = ?
-
-                                  E data_atendimento = ?
-
-                                  E o cronograma = ?
-
-                                  E o status NÃO ESTÁ EM ('Cancelado', 'Concluído')
-
-                            "", (provedor, data_iso, agendamento)).fetchone()
-
-                            Em caso de conflito:
-
-                                st.error(f"Conflito de agendamento com {provedor}.")
-
-                            outro:
-
+                            if conflito:
+                                st.error(f"Conflito de horário com {prestador}.")
+                            else:
                                 conn.execute("""
-
-                                    INSERIR EM agendamentos
-
-                                    (cadastro_de_parceiro, nome_do_parceiro, empresa_do_parceiro, telefone_do_parceiro,
-
-                                     tipo_de_serviço, unidade, nome_do_provedor, dados_do_serviço, agendamento, diretor_solicitante)
-
-                                    VALORES (?,?,?,?,?,?,?,?,?,?)
-
-                                "", (
-
-                                    tapete se tapete != "N/A" senão Nenhum,
-
+                                    INSERT INTO agendamentos 
+                                    (matricula_socio, nome_socio, empresa_socio, telefone_socio, 
+                                     tipo_servico, unidade, prestador_nome, data_atendimento, horario, diretor_solicitante)
+                                    VALUES (?,?,?,?,?,?,?,?,?,?)
+                                """, (
+                                    mat if mat != "N/A" else None,
                                     nome.strip(),
-
-                                    empresa.strip() ou None,
-
-                                    Telefone ou Nenhum,
-
-                                    serviço,
-
+                                    empresa.strip() or None,
+                                    telefone or None,
+                                    servico,
                                     unidade,
-
-                                    emprestador,
-
-                                    dados_iso,
-
-                                    agendar,
-
-                                    candidato_diretor
-
+                                    prestador,
+                                    data_iso,
+                                    horario,
+                                    diretor_solicitante
                                 ))
-
-                                conexão.commit()
-
-                                st.success("Agenda registrada com sucesso!")
-
+                                conn.commit()
+                                st.success("Agendamento registrado com sucesso!")
                                 st.rerun()
 
         # ─── ATENDIMENTOS / MEUS AGENDAMENTOS ───────────────────────────────────────
-
         elif escolha in ["Atendimentos", "Meus Agendamentos"]:
+            if tipo_user == "prestador":
+                st.title("Meus Agendamentos")
+                filtro_status = st.selectbox("Filtrar por status", ["Todos", "Pendente", "Realizado", "Cancelado"])
+            else:
+                st.title("Lista de Atendimentos")
+                filtro_status = st.selectbox("Filtrar por status", ["Todos", "Pendente", "Realizado", "Cancelado"])
 
-            se tipo_user == "prestador":
-
-                st.title("Meus Horários")
-
-                status_filter = st.selectbox("Filtrar por status", ["Todos", "Pendente", "Concluído", "Cancelado"])
-
-            outro:
-
-                st.title("Lista de Presença")
-
-                status_filter = st.selectbox("Filtrar por status", ["Todos", "Pendente", "Concluído", "Cancelado"])
-
-            com sqlite3.connect(DB_NAME) como conexão:
-
-                consulta = """
-
-                    SELECIONE id, nome_do_parceiro, tipo_de_serviço, unidade, dados_do_serviço, agendamento, status, diretor_solicitante
-
-                    DE agendas
-
-                    ONDE 1=1
-
+            with sqlite3.connect(DB_NAME) as conn:
+                query = """
+                    SELECT id, nome_socio, tipo_servico, unidade, data_atendimento, horario, status, diretor_solicitante
+                    FROM agendamentos 
+                    WHERE 1=1
                 """
+                params = []
 
-                parâmetros = []
+                if tipo_user == "prestador":
+                    query += " AND prestador_nome = ?"
+                    params.append(nome_user)
 
-                se tipo_user == "prestador":
-
-                    consulta += " E nome_do_provedor = ?"
-
-                    params.append(name_user)
-
-                se filter_status != "Todos":
-
-                    consulta += " E status = ?"
-
+                if filtro_status != "Todos":
+                    query += " AND status = ?"
                     params.append(filtro_status)
 
-                consulta += "ORDER BY data_atendimento DESC, agendamento DESC"
+                query += " ORDER BY data_atendimento DESC, horario DESC"
 
                 df = pd.read_sql_query(query, conn, params=params)
 
-            se df.vazio:
-
+            if df.empty:
                 st.info("Nenhum agendamento encontrado.")
-
-            outro:
-
+            else:
                 df["Data"] = pd.to_datetime(df["data_atendimento"]).dt.strftime("%d/%m/%Y")
-
                 df = df.drop(columns=["data_atendimento"])
 
-                se tipo_user == "prestador":
-
-                    para _, linha em df.iterrows():
-
-                        se row["status"] == "Pendente":
-
+                if tipo_user == "prestador":
+                    for _, row in df.iterrows():
+                        if row["status"] == "Pendente":
                             cols = st.columns([5, 1])
-
-                            com cols[0]:
-
-                                st.write(f"**{row['partner_name']}** – {row['service_type']} | {row['unit']} | {row['Data']} {row['schedule']}")
-
-                            com cols[1]:
-
-                                if st.button("✓ Marcar como Concluído", key=f"do_{row['id']}"):
-
-                                    com st.spinner("Validando..."):
-
-                                        com sqlite3.connect(DB_NAME) como conexão:
-
+                            with cols[0]:
+                                st.write(f"**{row['nome_socio']}** – {row['tipo_servico']} | {row['unidade']} | {row['Data']} {row['horario']}")
+                            with cols[1]:
+                                if st.button("✓ Marcar como Realizado", key=f"realizar_{row['id']}"):
+                                    with st.spinner("Validando..."):
+                                        with sqlite3.connect(DB_NAME) as conn:
                                             conn.execute("""
-
-                                                ATUALIZAR agendamento
-
-                                                DEFINIR status = 'Concluído',
-
-                                                    data_realized = CURRENT_TIMESTAMP,
-
+                                                UPDATE agendamentos 
+                                                SET status = 'Realizado',
+                                                    data_realizado = CURRENT_TIMESTAMP,
                                                     validado_por = ?
-
-                                                ONDE id = ?
-
-                                            "", (nome_usuário, linha['id']))
-
-                                            conexão.commit()
-
-                                    st.success(f"Serviço marcado como realizado por {nome_user}!")
-
+                                                WHERE id = ?
+                                            """, (nome_user, row['id']))
+                                            conn.commit()
+                                    st.success(f"Atendimento marcado como Realizado por {nome_user}!")
                                     st.rerun()
-
-                        outro:
-
-                            st.markdown(f"**{row['partner_name']}** – {row['service_type']} | {row['unit']} | {row['Data']} {row['schedule']} **({row['status']})**")
-
+                        else:
+                            st.markdown(f"**{row['nome_socio']}** – {row['tipo_servico']} | {row['unidade']} | {row['Data']} {row['horario']} **({row['status']})**")
                         st.markdown("---")
-
-                outro:
-
+                else:
                     st.dataframe(df, use_container_width=True)
 
-        # ─── FORNECEDORES ─────────────────────────────── ───────────────────────────────
+        # ─── PRESTADORES ────────────────────────────────────────────────────────────
+        elif escolha == "Prestadores" and tipo_user in ["master", "adm", "recepção"]:
+            st.title("Gestão de Prestadores")
 
-        elif escolha == "Provedores" e user_type em ["master", "adm", "recepção"]:
-
-            st.title("Gestão de Empréstimos")
-
-            com st.expander("Cadastro novo provedor"):
-
-                com st.form("cad_lender", clear_on_submit=True):
-
-                    nome_p = st.text_input("Nome completo do provedor", key="cad_nome_provider")
-
-                    cpf_p = st.text_input("CPF (opcional)", key="cad_cpf_lender")
-
-                    unit_p = st.selectbox("Unidade", UNITS, key="cad_unite_provider")
-
+            with st.expander("Cadastrar novo prestador"):
+                with st.form("cad_prestador", clear_on_submit=True):
+                    nome_p = st.text_input("Nome completo do prestador", key="cad_nome_prestador")
+                    cpf_p = st.text_input("CPF (opcional)", key="cad_cpf_prestador")
+                    unidade_p = st.selectbox("Unidade", UNIDADES, key="cad_unidade_prestador")
                     servico_p = st.selectbox("Serviço", SERVICOS, key="cad_servico_prestador")
+                    username_p = st.text_input("Nome de usuário para login (ex: CHIUINHO)", key="cad_username_prestador")
 
-                    username_p = st.text_input("Nome de usuário para login (ex: CHIUINHO)", key="cad_username_provider")
+                    if st.form_submit_button("Cadastrar Prestador + Acesso"):
+                        if nome_p.strip() and username_p.strip():
+                            unidade_norm = normalize_for_db(unidade_p)
+                            servico_norm = normalize_for_db(servico_p)
+                            username_clean = username_p.strip().upper()
 
-                    if st.form_submit_button("Cadastrar Provider + Access"):
-
-                        se name_p.strip() e username_p.strip():
-
-                            norma_da_unidade = normalizar_para_db(unidade_p)
-
-                            norma_servico = normalize_for_db(servico_p)
-
-                            nome_de_usuário_limpo = nome_de_usuário_p.strip().upper()
-
-                            conexão = sqlite3.connect(DB_NAME)
-
-                            tentar:
-
+                            conn = sqlite3.connect(DB_NAME)
+                            try:
                                 conn.execute("BEGIN TRANSACTION")
 
                                 conn.execute("""
-
-                                    INSERT INTO providers (name, cpf, unit, service_type)
-
-                                    VALORES (?, ?, ?, ?)
-
-                                """, (nome_p.strip(), limpar_cpf(cpf_p), unit_norm, servico_norm))
+                                    INSERT INTO prestadores (nome, cpf, unidade, tipo_servico)
+                                    VALUES (?, ?, ?, ?)
+                                """, (nome_p.strip(), limpar_cpf(cpf_p), unidade_norm, servico_norm))
 
                                 cursor = conn.cursor()
-
-                                cursor.execute("SELECT 1 FROM users WHERE username = ?", (username_clean,))
-
-                                se cursor.fetchone():
-
-                                    raise ValueError("Usuário não existe. Digite outro nome.")
+                                cursor.execute("SELECT 1 FROM usuarios WHERE username = ?", (username_clean,))
+                                if cursor.fetchone():
+                                    raise ValueError("Usuário já existe. Escolha outro nome.")
 
                                 senha_para_inserir = hash_password(SENHA_INICIAL)
 
                                 conn.execute("""
-
-                                    INSERT INTO users (username, password, access_type, senha_padrao)
-
-                                    VALORES (?, ?, 'Credor', 1)
-
+                                    INSERT INTO usuarios (username, password, tipo_acesso, senha_padrao)
+                                    VALUES (?, ?, 'Prestador', 1)
                                 """, (username_clean, senha_para_inserir))
 
-                                conexão.commit()
-
-                                st.success(f"Provedor **{nome_p}** cadastrado!\n\n"
-
-                                           f"**Acesso Creed:**\n"
-
+                                conn.commit()
+                                st.success(f"Prestador **{nome_p}** cadastrado!\n\n"
+                                           f"**Acesso criado:**\n"
                                            f"• Usuário: **{username_clean}**\n"
-
-                                           f"• Senha inicial: **{INICIAL_SENHA}**\n"
-
-                                           f"→ Faça login e insira o primeiro acesso."
-
+                                           f"• Senha inicial: **{SENHA_INICIAL}**\n"
+                                           f"→ Logue e troque a senha no primeiro acesso.")
                                 st.rerun()
 
-                            exceto ValueError como ve:
-
-                                se conn.in_transaction:
-
-                                    conexão.rollback()
-
+                            except ValueError as ve:
+                                if conn.in_transaction:
+                                    conn.rollback()
                                 st.error(str(ve))
-
-                            exceto Exception como e:
-
-                                se conn.in_transaction:
-
-                                    conexão.rollback()
-
+                            except Exception as e:
+                                if conn.in_transaction:
+                                    conn.rollback()
                                 st.error(f"Erro ao cadastrar: {str(e)}")
+                            finally:
+                                conn.close()
+                        else:
+                            st.error("Nome completo e nome de usuário são obrigatórios.")
 
-                            finalmente:
+            with sqlite3.connect(DB_NAME) as conn:
+                df_p = pd.read_sql_query("SELECT id, nome, cpf, unidade, tipo_servico FROM prestadores ORDER BY nome", conn)
 
-                                conexão.fechar()
-
-                        outro:
-
-                            st.error("Nome completo e nome de usuário obrigatório.")
-
-            com sqlite3.connect(DB_NAME) como conexão:
-
-                df_p = pd.read_sql_query("SELECT id, nome, cpf, unit, service_type FROM providers ORDER BY nome", conn)
-
-            se df_p.vazio:
-
-                st.info("Provedor Nenhum cadastrado.")
-
-            outro:
-
-                para _, linha em df_p.iterrows():
-
+            if df_p.empty:
+                st.info("Nenhum prestador cadastrado.")
+            else:
+                for _, row in df_p.iterrows():
                     expander_key = f"prest_exp_{row['id']}"
-
-                    com st.expander(f"{row['nome']} – {row['service_type']} ({row['unit']})", expanded=False):
-
+                    with st.expander(f"{row['nome']} – {row['tipo_servico']} ({row['unidade']})", expanded=False):
                         col1, col2 = st.columns([4, 1])
 
-                        com col1:
-
-                            com st.form(f"edit_prest_{row['id']}"):
-
+                        with col1:
+                            with st.form(f"edit_prest_{row['id']}"):
                                 nome_edit = st.text_input("Nome", value=row['nome'], key=f"nome_edit_{row['id']}")
-
                                 cpf_edit = st.text_input("CPF", value=row['cpf'] or "", key=f"cpf_edit_{row['id']}")
+                                unidade_edit = st.selectbox("Unidade", UNIDADES, index=UNIDADES.index(row['unidade']) if row['unidade'] in UNIDADES else 0, key=f"uni_edit_{row['id']}")
+                                servico_edit = st.selectbox("Serviço", SERVICOS, index=SERVICOS.index(row['tipo_servico']) if row['tipo_servico'] in SERVICOS else 0, key=f"serv_edit_{row['id']}")
 
-                                unit_edit = st.selectbox("Unidade", UNITS, index=UNITS.index(row['unit']) if row['unit'] in UNITS else 0, key=f"uni_edit_{row['id']}")
-
-                                servico_edit = st.selectbox("Serviço", SERVICOS, index=SERVICOS.index(row['tipo_servico']) if row['tipo_servico'] em SERVICOS else 0, key=f"serv_edit_{row['id']}")
-
-                                if st.form_submit_button("Salvar alterações", key=f"save_prest_{row['id']}"):
-
-                                    norma_da_unidade = normalizar_para_db(edição_da_unidade)
-
-                                    norma_servico = normalize_for_db(servico_edit)
-
-                                    com sqlite3.connect(DB_NAME) como conexão:
-
+                                if st.form_submit_button("Salvar alterações", key=f"salvar_prest_{row['id']}"):
+                                    unidade_norm = normalize_for_db(unidade_edit)
+                                    servico_norm = normalize_for_db(servico_edit)
+                                    with sqlite3.connect(DB_NAME) as conn:
                                         conn.execute("""
-
-                                            ATUALIZAR fornecedores
-
-                                            DEFINIR nome = ?, cpf = ?, unidade = ?, tipo_de_serviço = ?
-
-                                            ONDE id = ?
-
-                                        """, (nome_edit.strip(), limpar_cpf(cpf_edit), unit_norm, servico_norm, row['id']))
-
-                                        conexão.commit()
-
-                                    st.success("Provedor atualizado!")
-
+                                            UPDATE prestadores 
+                                            SET nome = ?, cpf = ?, unidade = ?, tipo_servico = ? 
+                                            WHERE id = ?
+                                        """, (nome_edit.strip(), limpar_cpf(cpf_edit), unidade_norm, servico_norm, row['id']))
+                                        conn.commit()
+                                    st.success("Prestador atualizado!")
                                     st.rerun()
 
-                        com col2:
-
+                        with col2:
                             if st.button("Excluir", key=f"del_btn_prest_{row['id']}"):
-
                                 st.session_state[f"show_confirm_del_prest_{row['id']}"] = True
 
-                            se st.session_state.get(f"show_confirm_del_prest_{row['id']}", False):
-
-                                st.warning("Tem certeza de que deseja excluir este provedor?")
-
+                            if st.session_state.get(f"show_confirm_del_prest_{row['id']}", False):
+                                st.warning("Tem certeza que deseja excluir este prestador?")
                                 col_del1, col_del2 = st.columns(2)
-
-                                com col_del1:
-
+                                with col_del1:
                                     if st.button("Sim, excluir", key=f"conf_del_prest_{row['id']}", type="primary"):
-
-                                        conexão = sqlite3.connect(DB_NAME)
-
-                                        tentar:
-
+                                        conn = sqlite3.connect(DB_NAME)
+                                        try:
                                             cursor = conn.cursor()
-
-                                            cursor.execute("SELECT nome FROM providers WHERE id = ?", (row['id'],))
-
-                                            perst_nome_raw = cursor.fetchone()
-
-                                            se prest_nome_raw:
-
-                                                perst_nome_clean = perst_nome_raw[0].upper().replace(" ", "")
-
-                                                conn.execute("DELETE FROM users WHERE username = ?", (prest_nome_clean,))
-
-                                            conn.execute("DELETE FROM providers WHERE id = ?", (row['id'],))
-
-                                            conexão.commit()
-
-                                            st.success(f"Provedor **{row['nome']}** e possível acesso associado excluídos!")
-
+                                            cursor.execute("SELECT nome FROM prestadores WHERE id = ?", (row['id'],))
+                                            prest_nome_raw = cursor.fetchone()
+                                            if prest_nome_raw:
+                                                prest_nome_clean = prest_nome_raw[0].upper().replace(" ", "")
+                                                conn.execute("DELETE FROM usuarios WHERE username = ?", (prest_nome_clean,))
+                                            conn.execute("DELETE FROM prestadores WHERE id = ?", (row['id'],))
+                                            conn.commit()
+                                            st.success(f"Prestador **{row['nome']}** e possível acesso associado excluídos!")
                                             st.rerun()
-
-                                        exceto Exception como e:
-
-                                            se conn.in_transaction:
-
-                                                conexão.rollback()
-
+                                        except Exception as e:
+                                            if conn.in_transaction:
+                                                conn.rollback()
                                             st.error(f"Erro ao excluir: {str(e)}")
+                                        finally:
+                                            conn.close()
 
-                                        finalmente:
-
-                                            conexão.fechar()
-
-                                com col_del2:
-
+                                with col_del2:
                                     if st.button("Cancelar", key=f"cancel_del_prest_{row['id']}"):
-
                                         st.session_state[f"show_confirm_del_prest_{row['id']}"] = False
-
                                         st.rerun()
 
-        # ─── DIRETÓRIO ──────────────────────────────── ────────────────────────────────
+        # ─── DIRETORIA ──────────────────────────────────────────────────────────────
+        elif escolha == "Diretoria" and tipo_user in ["master", "adm", "recepção"]:
+            st.title("Gestão da Diretoria")
 
-        elif escolha == "Diretório" e user_type em ["master", "adm", "recepção"]:
+            is_master = (tipo_user == "master")
 
-            st.title("Gerenciamento de diretórios")
+            with st.expander("Cadastrar novo usuário (diretor ou prestador)" if is_master else "Somente Master pode cadastrar"):
+                if is_master:
+                    with st.form("cad_diretor"):
+                        nome_d = st.text_input("Nome completo")
+                        cpf_d = st.text_input("CPF (opcional)")
+                        area_d = st.text_input("Área de responsabilidade (opcional)")
+                        nivel_d = st.selectbox("Nível de acesso", NIVEIS_ACESSO)
+                        usuario_d = st.text_input("Nome de usuário (login)")
 
-            é_mestre = (tipo_de_usuário == "mestre")
+                        foto_upload = st.file_uploader("Foto (opcional)", type=["jpg", "jpeg", "png"])
 
-            com st.expander("Cadastrar novo usuário (diretor ou provedor)" se is_master senão "Somente o Master pode cadastrar"):
+                        if st.form_submit_button("Cadastrar"):
+                            if nome_d.strip() and usuario_d.strip():
+                                foto_bytes = None
+                                if foto_upload is not None:
+                                    foto_bytes = foto_upload.read()
+
+                                conn = sqlite3.connect(DB_NAME)
+                                try:
+                                    conn.execute("BEGIN TRANSACTION")
+                                    conn.execute("""
+                                        INSERT INTO diretores (nome, cpf, area_responsavel, nivel_acesso, username, foto)
+                                        VALUES (?, ?, ?, ?, ?, ?)
+                                    """, (nome_d.strip(), limpar_cpf(cpf_d), area_d or None, nivel_d, usuario_d.strip(), foto_bytes))
+
+                                    senha_diretor = hash_password(SENHA_INICIAL)
+
+                                    conn.execute("""
+                                        INSERT INTO usuarios (username, password, tipo_acesso, senha_padrao)
+                                        VALUES (?, ?, ?, 1)
+                                    """, (usuario_d.strip(), senha_diretor, nivel_d))
+                                    conn.commit()
+                                    st.success(f"Usuário cadastrado! Senha inicial definida.")
+                                    st.rerun()
+                                except sqlite3.IntegrityError:
+                                    conn.rollback()
+                                    st.error("Usuário já existe.")
+                                except Exception as e:
+                                    conn.rollback()
+                                    st.error(f"Erro ao cadastrar: {str(e)}")
+                                finally:
+                                    conn.close()
+                            else:
+                                st.error("Nome e usuário são obrigatórios.")
+                else:
+                    st.info("Apenas Master pode cadastrar novos usuários.")
+
+            with sqlite3.connect(DB_NAME) as conn:
+                df_d = pd.read_sql_query("""
+                    SELECT d.id, d.nome, d.cpf, d.area_responsavel, d.nivel_acesso, d.username,
+                           u.senha_padrao, d.foto
+                    FROM diretores d
+                    LEFT JOIN usuarios u ON d.username = u.username
+                    ORDER BY d.nome
+                """, conn)
+
+            if df_d.empty:
+                st.info("Nenhum usuário cadastrado.")
+            else:
+                for _, row in df_d.iterrows():
+                    titulo = f"{row['nome']} – {row['nivel_acesso']} ({row['username']})"
+                    if row['senha_padrao']:
+                        titulo += " (senha inicial)"
+
+                    with st.expander(titulo):
+                        col1, col2 = st.columns([3, 1])
+
+                        with col1:
+                            with st.form(f"edit_dir_{row['id']}"):
+                                nome_edit = st.text_input("Nome", value=row['nome'])
+                                cpf_edit = st.text_input("CPF", value=row['cpf'] or "")
+                                area_edit = st.text_input("Área", value=row['area_responsavel'] or "")
+                                nivel_edit = st.selectbox("Nível", NIVEIS_ACESSO,
+                                                          index=NIVEIS_ACESSO.index(row['nivel_acesso']) if row['nivel_acesso'] in NIVEIS_ACESSO else 0)
+
+                                foto_edit = st.file_uploader("Atualizar foto (opcional)", type=["jpg", "jpeg", "png"], key=f"foto_edit_{row['id']}")
+
+                                if st.form_submit_button("Salvar alterações"):
+                                    if is_master:
+                                        foto_bytes_edit = None
+                                        if foto_edit is not None:
+                                            foto_bytes_edit = foto_edit.read()
+
+                                        params = (nome_edit.strip(), limpar_cpf(cpf_edit), area_edit or None, nivel_edit, row['id'])
+                                        with sqlite3.connect(DB_NAME) as conn:
+                                            if foto_bytes_edit is not None:
+                                                conn.execute("""
+                                                    UPDATE diretores 
+                                                    SET nome = ?, cpf = ?, area_responsavel = ?, nivel_acesso = ?, foto = ? 
+                                                    WHERE id = ?
+                                                """, (*params, foto_bytes_edit))
+                                            else:
+                                                conn.execute("""
+                                                    UPDATE diretores 
+                                                    SET nome = ?, cpf = ?, area_responsavel = ?, nivel_acesso = ? 
+                                                    WHERE id = ?
+                                                """, params)
+                                            conn.commit()
+                                        st.success("Usuário atualizado!")
+                                        st.rerun()
+                                    else:
+                                        st.error("Apenas Master pode editar.")
+
+                        with col2:
+                            if row['foto']:
+                                foto_base64 = base64.b64encode(row['foto']).decode('utf-8')
+                                st.markdown(
+                                    f"""
+                                    <div style="text-align:center; margin:10px 0;">
+                                        <img src="data:image/jpeg;base64,{foto_base64}" 
+                                             style="width:150px; height:150px; border-radius:50%; object-fit:cover; border:3px solid #ddd;">
+                                    </div>
+                                    """,
+                                    unsafe_allow_html=True
+                                )
+                            else:
+                                st.markdown(
+                                    """
+                                    <div style="text-align:center; color:#aaa; font-size:14px; margin:10px 0;">
+                                        Sem foto
+                                    </div>
+                                    """,
+                                    unsafe_allow_html=True
+                                )
+
+                            if is_master:
+                                if st.button("Excluir", key=f"del_dir_{row['id']}"):
+                                    if st.button("Confirmar exclusão", key=f"conf_del_{row['id']}", type="primary"):
+                                        with sqlite3.connect(DB_NAME) as conn:
+                                            cursor = conn.cursor()
+                                            cursor.execute("SELECT username FROM diretores WHERE id = ?", (row['id'],))
+                                            username_dir = cursor.fetchone()
+                                            if username_dir and username_dir[0]:
+                                                conn.execute("DELETE FROM usuarios WHERE username = ?", (username_dir[0],))
+                                            conn.execute("DELETE FROM diretores WHERE id = ?", (row['id'],))
+                                            conn.commit()
+                                        st.success("Usuário excluído!")
+                                        st.rerun()
+
+                                if st.button("Reset senha para inicial", key=f"reset_{row['id']}"):
+                                    if st.button("Confirmar reset", key=f"conf_reset_{row['id']}", type="primary"):
+                                        senha_reset = hash_password(SENHA_INICIAL)
+                                        conn.execute("""
+                                            UPDATE usuarios 
+                                            SET password = ?, senha_padrao = 1 
+                                            WHERE username = ?
+                                        """, (senha_reset, row['username']))
+                                        conn.commit()
+                                        st.success("Senha redefinida para a inicial.")
+                                        st.rerun()
+                                    else:
+                                        st.error("Não foi possível resetar (problema com hash).")
+                            else:
+                                st.info("Apenas Master pode excluir ou resetar senha.")
+
+        # ─── IMPORTAR SÓCIOS ────────────────────────────────────────────────────────
+        elif escolha == "Importar Sócios" and tipo_user in ["master", "adm"]:
+            st.title("Importar Sócios e Dependentes")
+            st.info("""
+            Formato esperado:
+            • Aba 'Sócio'       → Col A: Matrícula | Col B: Nome | Col C: Empresa
+            • Aba 'Dependentes' → Col A: Matrícula | Col B: Nome | Col C: Empresa (geralmente em branco)
+            """)
+
+            arquivo = st.file_uploader("Planilha Excel", type=["xlsx"])
+
+            if arquivo:
+                try:
+                    xl = pd.ExcelFile(arquivo)
+                    df_final = pd.DataFrame()
+                    contagem = {"Sócio": 0, "Dependentes": 0}
+
+                    for aba, tipo in [("Sócio", "Titular"), ("Dependentes", "Dependente")]:
+                        if aba in xl.sheet_names:
+                            df = pd.read_excel(xl, sheet_name=aba, header=None, dtype=str)
+
+                            if len(df.columns) >= 3:
+                                df = df.iloc[:, :3].copy()
+                                df.columns = ['matricula', 'nome', 'empresa']
+                            else:
+                                df = df.iloc[:, :2].copy()
+                                df.columns = ['matricula', 'nome']
+                                df['empresa'] = None
+
+                            df['tipo'] = tipo
+
+                            df['empresa'] = df['empresa'].astype(str).str.strip().replace(['nan', 'None', ''], None)
+
+                            if tipo == "Dependente":
+                                df['empresa'] = "Dependente"
+
+                            df['matricula'] = df['matricula'].apply(normalize_matricula)
+                            df['nome'] = df['nome'].astype(str).str.strip().str.upper()
+                            df['empresa'] = df['empresa'].fillna("").astype(str)
+
+                            df = df.dropna(subset=['matricula', 'nome'])
+                            df = df[df['matricula'] != '']
+
+                            contagem[aba] = len(df)
+                            df_final = pd.concat([df_final, df], ignore_index=True)
+
+                    if df_final.empty:
+                        st.error("Nenhum dado válido.")
+                    else:
+                        df_final = df_final.drop_duplicates(subset=['matricula', 'nome', 'tipo'], keep='last')
+
+                        st.subheader("Pré-visualização")
+                        st.dataframe(
+                            df_final[['matricula', 'nome', 'empresa', 'tipo']],
+                            use_container_width=True
+                        )
+
+                        st.info(f"Resumo:\n- Sócios: {contagem['Sócio']}\n- Dependentes: {contagem['Dependentes']}\nTotal: {len(df_final)}")
+
+                        if st.button("Confirmar importação"):
+                            with sqlite3.connect(DB_NAME) as conn:
+                                df_final.to_sql("socios", conn, if_exists="replace", index=False)
+                                conn.execute("CREATE INDEX IF NOT EXISTS idx_matricula ON socios(matricula)")
+                            st.success(f"Importados {len(df_final)} registros! (todos dependentes preservados)")
+                            st.rerun()
+                except Exception as e:
+                    st.error(f"Erro ao processar planilha: {str(e)}")
+
+        # ─── RELATÓRIO DE SERVIÇOS ─────────────────────────────────────────────────
+        elif escolha == "Relatório de Serviços" and tipo_user == "master":
+            st.title("Relatório de Serviços")
+
+            with sqlite3.connect(DB_NAME) as conn:
+                prestadores_df = pd.read_sql_query("SELECT DISTINCT nome FROM prestadores ORDER BY nome", conn)
+                lista_prestadores = ["Todos"] + prestadores_df["nome"].tolist()
+
+                diretores_df = pd.read_sql_query("SELECT DISTINCT diretor_solicitante FROM agendamentos WHERE diretor_solicitante IS NOT NULL ORDER BY diretor_solicitante", conn)
+                lista_diretores = ["Todos"] + diretores_df["diretor_solicitante"].tolist()
+
+            col1, col2, col3, col4 = st.columns(4)
+
+            prestador_filtro = col1.selectbox("Prestador", lista_prestadores)
+            diretor_filtro = col2.selectbox("Diretor solicitante", lista_diretores)
+            data_inicio = col3.date_input("Data inicial", value=date.today() - timedelta(days=30))
+            data_fim = col4.date_input("Data final", value=date.today())
+
+            status_filtro = st.selectbox("Status", ["Todos", "Pendente", "Realizado", "Cancelado"])
+
+            if st.button("Gerar Relatório", type="primary"):
+                query = """
+                    SELECT 
+                        data_atendimento AS "Data",
+                        horario AS "Horário",
+                        nome_socio AS "Nome",
+                        CASE WHEN matricula_socio IS NULL THEN 'Não associado' ELSE matricula_socio END AS "Matrícula",
+                        CASE 
+                            WHEN matricula_socio IS NULL THEN 'Não associado'
+                            WHEN s.tipo = 'Titular' THEN 'Titular'
+                            ELSE 'Dependente'
+                        END AS "Tipo",
+                        tipo_servico AS "Serviço",
+                        unidade AS "Unidade",
+                        prestador_nome AS "Prestador",
+                        diretor_solicitante AS "Diretor",
+                        status AS "Status",
+                        criado_em AS "Criado em",
+                        data_realizado AS "Validado em",
+                        validado_por AS "Validado por"
+                    FROM agendamentos a
+                    LEFT JOIN socios s ON a.matricula_socio = s.matricula
+                    WHERE 1=1
+                """
+                params = []
+
+                if prestador_filtro != "Todos":
+                    query += " AND prestador_nome = ?"
+                    params.append(prestador_filtro)
+
+                if diretor_filtro != "Todos":
+                    query += " AND diretor_solicitante = ?"
+                    params.append(diretor_filtro)
+
+                if data_inicio:
+                    query += " AND data_atendimento >= ?"
+                    params.append(data_inicio.strftime("%Y-%m-%d"))
+
+                if data_fim:
+                    query += " AND data_atendimento <= ?"
+                    params.append(data_fim.strftime("%Y-%m-%d"))
+
+                if status_filtro != "Todos":
+                    query += " AND status = ?"
+                    params.append(status_filtro)
+
+                query += " ORDER BY data_atendimento DESC, horario DESC"
+
+                with sqlite3.connect(DB_NAME) as conn:
+                    df_relatorio = pd.read_sql_query(query, conn, params=params)
+
+                if df_relatorio.empty:
+                    st.info("Nenhum agendamento encontrado.")
+                else:
+                    st.success(f"{len(df_relatorio)} registros encontrados")
+
+                    df_display = df_relatorio.copy()
+                    df_display["Data"] = pd.to_datetime(df_display["Data"]).dt.strftime("%d/%m/%Y")
+                    df_display["Criado em"] = pd.to_datetime(df_display["Criado em"]).dt.strftime("%d/%m/%Y %H:%M")
+                    if "Validado em" in df_display.columns:
+                        df_display["Validado em"] = pd.to_datetime(df_display["Validado em"], errors='coerce').dt.strftime("%d/%m/%Y %H:%M")
+
+                    st.dataframe(df_display, use_container_width=True, hide_index=True)
+
+                    output_excel = io.BytesIO()
+                    with pd.ExcelWriter(output_excel, engine='xlsxwriter') as writer:
+                        df_relatorio.to_excel(writer, index=False, sheet_name='Relatório')
+                    excel_data = output_excel.getvalue()
+
+                    st.download_button(
+                        label="Baixar em Excel (.xlsx)",
+                        data=excel_data,
+                        file_name=f"relatorio_servicos_{date.today().strftime('%Y-%m-%d')}.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                    )
+
+                    if REPORTLAB_AVAILABLE:
+                        output_pdf = io.BytesIO()
+                        doc = SimpleDocTemplate(output_pdf, pagesize=letter)
+                        elements = []
+
+                        styles = getSampleStyleSheet()
+                        elements.append(Paragraph("Relatório de Serviços", styles['Title']))
+                        elements.append(Paragraph(f"Gerado em: {date.today().strftime('%d/%m/%Y')}", styles['Normal']))
+
+                        data = [df_relatorio.columns.tolist()] + df_relatorio.values.tolist()
+                        table = Table(data)
+
+                        table.setStyle(TableStyle([
+                            ('BACKGROUND', (0,0), (-1,0), colors.grey),
+                            ('TEXTCOLOR', (0,0), (-1,0), colors.whitesmoke),
+                            ('ALIGN', (0,0), (-1,-1), 'CENTER'),
+                            ('FONTNAME', (0,0), (-1,0), 'Helvetica-Bold'),
+                            ('FONTSIZE', (0,0), (-1,0), 10),
+                            ('BOTTOMPADDING', (0,0), (-1,0), 12),
+                            ('BACKGROUND', (0,1), (-1,-1), colors.beige),
+                            ('GRID', (0,0), (-1,-1), 1, colors.black),
+                            ('FONTSIZE', (0,1), (-1,-1), 8),
+                        ]))
+
+                        elements.append(table)
+                        doc.build(elements)
+                        pdf_data = output_pdf.getvalue()
+
+                        st.download_button(
+                            label="Baixar em PDF",
+                            data=pdf_data,
+                            file_name=f"relatorio_servicos_{date.today().strftime('%Y-%m-%d')}.pdf",
+                            mime="application/pdf"
+                        )
+                    else:
+                        st.warning("Para gerar PDF, instale reportlab: pip install reportlab")
