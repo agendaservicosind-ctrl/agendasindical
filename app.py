@@ -35,7 +35,7 @@ NIVEIS_ACESSO = ["Master", "ADM", "Recepção", "Prestador"]
 HORARIOS = [f"{h:02d}:{m:02d}" for h in range(8, 18) for m in (0, 30)]
 SENHA_INICIAL = "Sindicato@2026!"
 
-# ================== FUNÇÕES DE SENHA (versão robusta para Cloud) ==================
+# ================== FUNÇÕES DE SENHA ==================
 def hash_password(password: str) -> str:
     salt = secrets.token_hex(16)
     hashed = hashlib.sha256((salt + password).encode('utf-8')).hexdigest()
@@ -44,22 +44,21 @@ def hash_password(password: str) -> str:
 def check_password(provided: str, stored) -> bool:
     if stored is None:
         return False
-    
-    # Converte bytes → str (problema frequente no ambiente hospedado)
+
+    # Converte bytes para str (problema comum no Streamlit Cloud)
     if isinstance(stored, (bytes, bytearray)):
         try:
             stored = stored.decode('utf-8')
         except UnicodeDecodeError:
             return False
-    
-    # Garante string e remove espaços extras
+
     stored = str(stored).strip()
     provided = str(provided).strip()
 
     if not stored:
         return False
 
-    # Compatibilidade com senha antiga em texto plano
+    # Senha antiga em texto plano
     if '$' not in stored:
         return stored == provided
 
@@ -188,14 +187,14 @@ def create_default_master_if_needed():
             conn.commit()
             st.info("Usuário master criado com senha padrão.")
         else:
-            # Força atualização da senha padrão para garantir consistência no Cloud
+            # Força atualização para garantir que o hash seja compatível com o ambiente atual
             cursor.execute("""
                 UPDATE usuarios 
                 SET password = ?, senha_padrao = 1 
                 WHERE username = 'master'
             """, (senha_hash,))
             conn.commit()
-            st.info("Senha padrão do master foi redefinida (Sindicato@2026!). Pode tentar logar.")
+            st.info("Senha do master foi redefinida para padrão (Sindicato@2026!). Pode logar.")
 
 def corrigir_coluna_foto():
     with sqlite3.connect(DB_NAME) as conn:
@@ -238,7 +237,7 @@ if st.session_state.user_data is None:
 
                     # Debug temporário (remova depois de testar)
                     st.write("DEBUG - Tipo da senha no banco:", type(stored_password))
-                    st.write("DEBUG - Senha armazenada (primeiros 30 chars):", str(stored_password)[:30] if stored_password else "None")
+                    st.write("DEBUG - Senha armazenada (primeiros 50 chars):", str(stored_password)[:50] if stored_password else "None")
 
                     # Converte se for bytes
                     if isinstance(stored_password, (bytes, bytearray)):
@@ -255,10 +254,10 @@ if st.session_state.user_data is None:
                         st.session_state.forcar_troca_senha = bool(senha_padrao)
                         if senha_padrao:
                             st.info("Sua senha é a inicial. Por segurança, altere-a agora.")
-                        st.success("Login realizado com sucesso!")
+                        st.success("Login realizado!")
                         st.rerun()
                     else:
-                        st.error("Senha incorreta. Verifique se usou exatamente: Sindicato@2026!")
+                        st.error("Senha incorreta.")
                 else:
                     st.error("Usuário não encontrado.")
 else:
@@ -310,14 +309,25 @@ else:
                     st.error("Não use a senha inicial novamente.")
                 else:
                     hashed = hash_password(nova_senha)
-                    with sqlite3.connect(DB_NAME) as conn:
-                        conn.execute("UPDATE usuarios SET password = ?, senha_padrao = 0 WHERE username = ?",
-                                     (hashed, nome_user))
-                        conn.commit()
-                    st.success("Senha alterada! Faça login novamente.")
-                    st.session_state.user_data = None
-                    st.session_state.forcar_troca_senha = False
-                    st.rerun()
+                    # Garante que o valor seja sempre string
+                    if not isinstance(hashed, str):
+                        hashed = str(hashed)
+
+                    try:
+                        with sqlite3.connect(DB_NAME) as conn:
+                            conn.execute("""
+                                UPDATE usuarios 
+                                SET password = ?, senha_padrao = 0 
+                                WHERE username = ?
+                            """, (hashed, nome_user))
+                            conn.commit()
+                        st.success("Senha alterada com sucesso! Faça login novamente com a nova senha.")
+                        st.session_state.user_data = None
+                        st.session_state.forcar_troca_senha = False
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Erro ao salvar nova senha: {str(e)}")
+                        st.info("Tente novamente ou verifique se o banco está acessível.")
     else:
         # Menus de navegação
         if tipo_user == "prestador":
@@ -332,7 +342,6 @@ else:
                 menu.extend(["Relatório de Serviços", "Redefinir Senhas"])
             menu.append("Sair")
         escolha = st.sidebar.radio("Navegação", menu)
-
         if escolha == "Sair":
             st.session_state.user_data = None
             st.rerun()
