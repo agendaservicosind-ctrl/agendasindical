@@ -44,30 +44,30 @@ def hash_password(password: str) -> str:
 def check_password(provided: str, stored) -> bool:
     if stored is None:
         return False
-
+    
     # Converte bytes para str (problema comum no Streamlit Cloud)
     if isinstance(stored, (bytes, bytearray)):
         try:
             stored = stored.decode('utf-8')
         except UnicodeDecodeError:
             return False
-
+    
     stored = str(stored).strip()
     provided = str(provided).strip()
-
+    
     if not stored:
         return False
-
-    # Senha antiga em texto plano
+    
+    # Compatibilidade com senha antiga em texto plano
     if '$' not in stored:
         return stored == provided
-
-    # Formato salt$hash
+    
+    # Formato com salt$hash
     try:
         salt, hashed = stored.split('$', 1)
         computed = hashlib.sha256((salt + provided).encode('utf-8')).hexdigest()
         return computed == hashed
-    except Exception:
+    except:
         return False
 
 # ================== FUNÇÕES AUXILIARES ==================
@@ -112,7 +112,7 @@ def init_db():
             except sqlite3.OperationalError:
                 pass
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_matricula ON socios(matricula)")
-
+        
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS usuarios (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -171,30 +171,17 @@ def init_db():
             pass
         conn.commit()
 
-def create_default_master_if_needed():
+def force_reset_master_password():
+    senha_hash = hash_password(SENHA_INICIAL)
     with sqlite3.connect(DB_NAME) as conn:
         cursor = conn.cursor()
-        cursor.execute("SELECT password FROM usuarios WHERE username = 'master'")
-        row = cursor.fetchone()
-
-        senha_hash = hash_password(SENHA_INICIAL)
-
-        if row is None:
-            cursor.execute("""
-                INSERT INTO usuarios (username, password, tipo_acesso, senha_padrao)
-                VALUES ('master', ?, 'Master', 1)
-            """, (senha_hash,))
-            conn.commit()
-            st.info("Usuário master criado com senha padrão.")
-        else:
-            # Força atualização para garantir que o hash seja compatível com o ambiente atual
-            cursor.execute("""
-                UPDATE usuarios 
-                SET password = ?, senha_padrao = 1 
-                WHERE username = 'master'
-            """, (senha_hash,))
-            conn.commit()
-            st.info("Senha do master foi redefinida para padrão (Sindicato@2026!). Pode logar.")
+        cursor.execute("""
+            INSERT OR REPLACE INTO usuarios 
+            (username, password, tipo_acesso, senha_padrao)
+            VALUES ('master', ?, 'Master', 1)
+        """, (senha_hash,))
+        conn.commit()
+    st.info("Senha do usuário 'master' foi RESETADA para 'Sindicato@2026!' (para corrigir incompatibilidade). Logue agora e troque imediatamente.")
 
 def corrigir_coluna_foto():
     with sqlite3.connect(DB_NAME) as conn:
@@ -206,7 +193,7 @@ def corrigir_coluna_foto():
             conn.commit()
 
 init_db()
-create_default_master_if_needed()
+force_reset_master_password()  # <--- ESSA LINHA FORÇA O RESET A CADA INÍCIO (remova depois de logar)
 corrigir_coluna_foto()
 
 if 'user_data' not in st.session_state:
@@ -231,21 +218,20 @@ if st.session_state.user_data is None:
                         "SELECT username, password, tipo_acesso, senha_padrao FROM usuarios WHERE UPPER(username) = ?",
                         (username.strip().upper(),)
                     ).fetchone()
-
                 if user:
                     stored_username, stored_password, stored_tipo, senha_padrao = user
-
-                    # Debug temporário (remova depois de testar)
+                    
+                    # Debug temporário - remova depois de testar
                     st.write("DEBUG - Tipo da senha no banco:", type(stored_password))
                     st.write("DEBUG - Senha armazenada (primeiros 50 chars):", str(stored_password)[:50] if stored_password else "None")
-
+                    
                     # Converte se for bytes
                     if isinstance(stored_password, (bytes, bytearray)):
                         try:
                             stored_password = stored_password.decode('utf-8')
                         except:
                             stored_password = ""
-
+                    
                     if check_password(password, stored_password):
                         st.session_state.user_data = {
                             "username": stored_username,
@@ -293,7 +279,6 @@ else:
         else:
             st.markdown(f"👤 **{nome_user.upper()}** ({tipo_user.upper()})")
         st.markdown("---")
-
     if st.session_state.forcar_troca_senha:
         st.title("Alterar Senha Inicial (obrigatório)")
         st.warning(f"Olá {nome_user.upper()}, defina uma nova senha agora.")
@@ -309,25 +294,21 @@ else:
                     st.error("Não use a senha inicial novamente.")
                 else:
                     hashed = hash_password(nova_senha)
-                    # Garante que o valor seja sempre string
+                    # Garante string
                     if not isinstance(hashed, str):
                         hashed = str(hashed)
-
                     try:
                         with sqlite3.connect(DB_NAME) as conn:
-                            conn.execute("""
-                                UPDATE usuarios 
-                                SET password = ?, senha_padrao = 0 
-                                WHERE username = ?
-                            """, (hashed, nome_user))
+                            conn.execute("UPDATE usuarios SET password = ?, senha_padrao = 0 WHERE username = ?",
+                                         (hashed, nome_user))
                             conn.commit()
-                        st.success("Senha alterada com sucesso! Faça login novamente com a nova senha.")
+                        st.success("Senha alterada! Faça login novamente.")
                         st.session_state.user_data = None
                         st.session_state.forcar_troca_senha = False
                         st.rerun()
                     except Exception as e:
                         st.error(f"Erro ao salvar nova senha: {str(e)}")
-                        st.info("Tente novamente ou verifique se o banco está acessível.")
+                        st.info("Tente novamente ou contate o administrador.")
     else:
         # Menus de navegação
         if tipo_user == "prestador":
@@ -931,4 +912,3 @@ else:
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                     )
                     st.warning("Para gerar PDF, instale reportlab: pip install reportlab")
-                    "Correção completa de senha + troca de senha inicial"
