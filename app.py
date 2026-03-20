@@ -931,3 +931,4 @@ else:
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                     )
                     st.warning("Para gerar PDF, instale reportlab: pip install reportlab")
+                    "Correção completa de senha + troca de senha inicial"
