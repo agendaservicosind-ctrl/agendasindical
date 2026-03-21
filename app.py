@@ -189,14 +189,17 @@ def init_db():
         except:
             pass
 
-        # RESET AUTOMÁTICO DO MASTER (essencial para testes)
-        master_hash = hash_password(SENHA_INICIAL)
-        cursor.execute("""
-            INSERT OR REPLACE INTO usuarios 
-            (username, password, tipo_acesso, senha_padrao)
-            VALUES ('MASTER', ?, 'Master', 1)
-        """, (master_hash,))
-        conn.commit()
+        # Cria MASTER apenas se NÃO existir (não sobrescreve mais)
+        cursor.execute("SELECT 1 FROM usuarios WHERE username = 'MASTER'")
+        if not cursor.fetchone():
+            master_hash = hash_password(SENHA_INICIAL)
+            cursor.execute("""
+                INSERT INTO usuarios 
+                (username, password, tipo_acesso, senha_padrao)
+                VALUES ('MASTER', ?, 'Master', 1)
+            """, (master_hash,))
+            conn.commit()
+            st.info("Usuário MASTER criado pela primeira vez com senha inicial.")
 
 def corrigir_coluna_foto():
     with sqlite3.connect(DB_NAME) as conn:
@@ -236,7 +239,7 @@ if st.session_state.user_data is None:
                 if user:
                     stored_username, stored_password, stored_tipo, senha_padrao = user
                     
-                    # DEBUG VISÍVEL (deixe ativado até o login funcionar)
+                    # DEBUG VISÍVEL (mantenha até funcionar)
                     st.info(f"**DEBUG** - Usuário encontrado: `{stored_username}`")
                     st.info(f"**DEBUG** - Tipo do campo password: `{type(stored_password)}`")
                     if isinstance(stored_password, str):
@@ -317,7 +320,7 @@ else:
                     with sqlite3.connect(DB_NAME) as conn:
                         conn.execute("UPDATE usuarios SET password = ?, senha_padrao = 0 WHERE username = ?",
                                      (hashed, nome_user))
-                        conn.commit()  # commit explícito
+                        conn.commit()
                     st.success("Senha alterada com sucesso! Faça login novamente.")
                     st.session_state.user_data = None
                     st.session_state.forcar_troca_senha = False
@@ -468,7 +471,7 @@ else:
                                 st.success("Agendamento registrado!")
                                 st.rerun()
 
-        # ─── ATENDIMENTOS ───────────────────────────────────────────────────────────
+        # ─── ATENDIMENTOS / MEUS AGENDAMENTOS ───────────────────────────────────────
         elif escolha in ["Atendimentos", "Meus Agendamentos"]:
             if tipo_user == "prestador":
                 st.title("Meus Agendamentos")
@@ -568,6 +571,7 @@ else:
                 st.info("Nenhum prestador cadastrado.")
             else:
                 for _, row in df_p.iterrows():
+                    expander_key = f"prest_exp_{row['id']}"
                     with st.expander(f"{row['nome']} – {row['tipo_servico']} ({row['unidade']})"):
                         col1, col2 = st.columns([4, 1])
                         with col1:
