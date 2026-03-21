@@ -74,7 +74,8 @@ def check_password(provided: str, stored) -> bool:
         salt = binascii.unhexlify(salt_hex)
         key = hashlib.pbkdf2_hmac('sha512', provided.encode('utf-8'), salt, iterations, dklen=64)
         return binascii.hexlify(key).decode('ascii') == stored_hash
-    except:
+    except Exception as e:
+        st.error(f"Erro interno na verificação de senha: {str(e)}")
         return False
 
 # ================== FUNÇÕES AUXILIARES ==================
@@ -178,23 +179,19 @@ def init_db():
             cursor.execute("ALTER TABLE agendamentos ADD COLUMN validado_por TEXT")
         except:
             pass
-        
-        # Cria ou atualiza o MASTER
-        cursor.execute("SELECT senha_padrao FROM usuarios WHERE UPPER(username) = 'MASTER'")
-        row = cursor.fetchone()
-        master_hash = hash_password(SENHA_INICIAL)
-        if row is None:
-            cursor.execute("""
-                INSERT INTO usuarios (username, password, tipo_acesso, senha_padrao)
-                VALUES ('MASTER', ?, 'Master', 1)
-            """, (master_hash,))
-            conn.commit()
-        elif row[0] == 1:
-            cursor.execute("""
-                UPDATE usuarios SET password = ?, senha_padrao = 1 
-                WHERE UPPER(username) = 'MASTER'
-            """, (master_hash,))
-            conn.commit()
+        conn.commit()
+
+def force_reset_master():
+    senha_hash = hash_password(SENHA_INICIAL)
+    with sqlite3.connect(DB_NAME) as conn:
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM usuarios WHERE UPPER(username) = 'MASTER'")
+        cursor.execute("""
+            INSERT INTO usuarios (username, password, tipo_acesso, senha_padrao)
+            VALUES ('MASTER', ?, 'Master', 1)
+        """, (senha_hash,))
+        conn.commit()
+    st.info("Senha do usuário MASTER foi RESETADA para 'Sindicato@2026!'. Logue agora e troque imediatamente.")
 
 def corrigir_coluna_foto():
     with sqlite3.connect(DB_NAME) as conn:
@@ -206,6 +203,7 @@ def corrigir_coluna_foto():
             conn.commit()
 
 init_db()
+force_reset_master()  # <--- FORÇA RESET DO MASTER A CADA INÍCIO (remova depois de logar)
 corrigir_coluna_foto()
 
 if 'user_data' not in st.session_state:
@@ -233,8 +231,22 @@ if st.session_state.user_data is None:
                     ).fetchone()
                 if user:
                     stored_username, stored_password, stored_tipo, senha_padrao = user
+                    
+                    # DEBUG VISÍVEL (deixe até confirmar que funciona)
+                    st.info(f"**DEBUG** - Usuário encontrado: `{stored_username}`")
+                    st.info(f"**DEBUG** - Tipo do campo password: `{type(stored_password)}`")
+                    if isinstance(stored_password, str):
+                        st.info(f"**DEBUG** - Hash armazenado (primeiros 60 chars):")
+                        st.code(stored_password[:60] + "..." if len(stored_password) > 60 else stored_password)
+                    elif isinstance(stored_password, bytes):
+                        st.info(f"**DEBUG** - Hash como bytes:")
+                        st.code(repr(stored_password[:60]) + "...")
+                    st.info(f"**DEBUG** - senha_padrao (1=inicial): `{senha_padrao}`")
+                    
+                    # Converte se necessário
                     if isinstance(stored_password, (bytes, bytearray)):
                         stored_password = stored_password.decode('utf-8', errors='replace')
+                    
                     if check_password(password, stored_password):
                         st.session_state.user_data = {
                             "username": stored_username,
@@ -243,12 +255,12 @@ if st.session_state.user_data is None:
                         st.session_state.forcar_troca_senha = bool(senha_padrao)
                         if senha_padrao:
                             st.info("Sua senha é a inicial. Por segurança, altere-a agora.")
-                        st.success("Login realizado!")
+                        st.success("Login realizado com sucesso!")
                         st.rerun()
                     else:
-                        st.error("Senha incorreta.")
+                        st.error("Senha incorreta. Verifique se digitou exatamente 'Sindicato@2026!'")
                 else:
-                    st.error("Usuário não encontrado.")
+                    st.error("Usuário 'MASTER' não encontrado no banco.")
 else:
     user_info = st.session_state.user_data
     tipo_user = user_info["tipo"].lower()
@@ -303,12 +315,13 @@ else:
                             conn.execute("UPDATE usuarios SET password = ?, senha_padrao = 0 WHERE username = ?",
                                          (hashed, nome_user))
                             conn.commit()
-                        st.success("Senha alterada! Faça login novamente.")
+                        st.success("Senha alterada com sucesso! Faça login novamente com a nova senha.")
                         st.session_state.user_data = None
                         st.session_state.forcar_troca_senha = False
                         st.rerun()
                     except Exception as e:
                         st.error(f"Erro ao salvar nova senha: {str(e)}")
+                        st.info("Tente novamente ou verifique se o banco está acessível.")
     else:
         # Menus de navegação
         if tipo_user == "prestador":
@@ -326,61 +339,6 @@ else:
         if escolha == "Sair":
             st.session_state.user_data = None
             st.rerun()
-
-        # ─── IMPORTAR SÓCIOS ────────────────────────────────────────────────────────
-        if escolha == "Importar Sócios" and tipo_user in ["master", "adm"]:
-            st.title("Importar Sócios e Dependentes")
-            st.info("""
-            Formato esperado:
-            • Aba 'Sócio' → Col A: Matrícula | Col B: Nome | Col C: Empresa
-            • Aba 'Dependentes' → Col A: Matrícula | Col B: Nome | Col C: Empresa (geralmente em branco)
-            """)
-            arquivo = st.file_uploader("Planilha Excel", type=["xlsx"])
-            if arquivo:
-                try:
-                    xl = pd.ExcelFile(arquivo)
-                    df_final = pd.DataFrame()
-                    contagem = {"Sócio": 0, "Dependentes": 0}
-                    for aba, tipo in [("Sócio", "Titular"), ("Dependentes", "Dependente")]:
-                        if aba in xl.sheet_names:
-                            df = pd.read_excel(xl, sheet_name=aba, header=None, dtype=str, engine='openpyxl')
-                            if len(df.columns) >= 3:
-                                df = df.iloc[:, :3].copy()
-                                df.columns = ['matricula', 'nome', 'empresa']
-                            else:
-                                df = df.iloc[:, :2].copy()
-                                df.columns = ['matricula', 'nome']
-                                df['empresa'] = None
-                            df['tipo'] = tipo
-                            df['empresa'] = df['empresa'].astype(str).str.strip().replace(['nan', 'None', ''], None)
-                            if tipo == "Dependente":
-                                df['empresa'] = "Dependente"
-                            df['matricula'] = df['matricula'].apply(normalize_matricula)
-                            df['nome'] = df['nome'].astype(str).str.strip().str.upper()
-                            df['empresa'] = df['empresa'].fillna("").astype(str)
-                            df = df.dropna(subset=['matricula', 'nome'])
-                            df = df[df['matricula'] != '']
-                            contagem[aba] = len(df)
-                            df_final = pd.concat([df_final, df], ignore_index=True)
-                    if df_final.empty:
-                        st.error("Nenhum dado válido.")
-                    else:
-                        df_final = df_final.drop_duplicates(subset=['matricula', 'nome', 'tipo'], keep='last')
-                        st.subheader("Pré-visualização")
-                        st.dataframe(
-                            df_final[['matricula', 'nome', 'empresa', 'tipo']],
-                            use_container_width=True
-                        )
-                        st.info(f"Resumo:\n- Sócios: {contagem['Sócio']}\n- Dependentes: {contagem['Dependentes']}\nTotal: {len(df_final)}")
-                        if st.button("Confirmar importação"):
-                            with sqlite3.connect(DB_NAME) as conn:
-                                df_final.to_sql("socios", conn, if_exists="replace", index=False)
-                                conn.execute("CREATE INDEX IF NOT EXISTS idx_matricula ON socios(matricula)")
-                            st.success(f"Importados {len(df_final)} registros! (todos dependentes preservados)")
-                            st.rerun()
-                except Exception as e:
-                    st.error(f"Erro ao processar planilha: {str(e)}")
-                    st.info("Verifique se o arquivo é .xlsx válido e se contém as colunas esperadas.")
 
         # ─── AGENDAR ────────────────────────────────────────────────────────────────
         if escolha == "Agendar":
