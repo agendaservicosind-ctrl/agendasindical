@@ -107,7 +107,7 @@ def init_db():
         conn.execute("PRAGMA busy_timeout = 5000;")
         cursor = conn.cursor()
 
-        # socios
+        # Tabelas (mantidas iguais)
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS socios (
                 matricula TEXT PRIMARY KEY,
@@ -125,7 +125,6 @@ def init_db():
                 pass
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_matricula ON socios(matricula)")
 
-        # usuarios
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS usuarios (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -136,7 +135,6 @@ def init_db():
             )
         ''')
 
-        # prestadores
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS prestadores (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -147,7 +145,6 @@ def init_db():
             )
         ''')
 
-        # diretores
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS diretores (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -160,7 +157,6 @@ def init_db():
             )
         ''')
 
-        # agendamentos
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS agendamentos (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -189,7 +185,7 @@ def init_db():
         except:
             pass
 
-        # Cria MASTER apenas se NÃO existir (não sobrescreve mais)
+        # Cria MASTER APENAS SE NÃO EXISTIR (não sobrescreve mais!)
         cursor.execute("SELECT 1 FROM usuarios WHERE username = 'MASTER'")
         if not cursor.fetchone():
             master_hash = hash_password(SENHA_INICIAL)
@@ -199,7 +195,7 @@ def init_db():
                 VALUES ('MASTER', ?, 'Master', 1)
             """, (master_hash,))
             conn.commit()
-            st.info("Usuário MASTER criado pela primeira vez com senha inicial.")
+            st.info("Usuário MASTER criado pela primeira vez (senha inicial definida).")
 
 def corrigir_coluna_foto():
     with sqlite3.connect(DB_NAME) as conn:
@@ -239,15 +235,15 @@ if st.session_state.user_data is None:
                 if user:
                     stored_username, stored_password, stored_tipo, senha_padrao = user
                     
-                    # DEBUG VISÍVEL (mantenha até funcionar)
+                    # DEBUG VISÍVEL (deixe ativado até confirmar que login funciona)
                     st.info(f"**DEBUG** - Usuário encontrado: `{stored_username}`")
                     st.info(f"**DEBUG** - Tipo do campo password: `{type(stored_password)}`")
                     if isinstance(stored_password, str):
-                        st.info(f"**DEBUG** - Hash armazenado (início):")
-                        st.code(stored_password[:120] + "..." if len(stored_password) > 120 else stored_password)
+                        st.info(f"**DEBUG** - Hash armazenado (completo para teste):")
+                        st.code(stored_password)
                     elif isinstance(stored_password, bytes):
-                        st.info(f"**DEBUG** - Hash como bytes (início):")
-                        st.code(repr(stored_password[:80]))
+                        st.info(f"**DEBUG** - Hash como bytes:")
+                        st.code(repr(stored_password))
                     st.info(f"**DEBUG** - senha_padrao (1=inicial): `{senha_padrao}`")
 
                     if check_password(password, stored_password):
@@ -321,7 +317,7 @@ else:
                         conn.execute("UPDATE usuarios SET password = ?, senha_padrao = 0 WHERE username = ?",
                                      (hashed, nome_user))
                         conn.commit()
-                    st.success("Senha alterada com sucesso! Faça login novamente.")
+                    st.success("Senha alterada com sucesso! Faça login novamente com a nova senha.")
                     st.session_state.user_data = None
                     st.session_state.forcar_troca_senha = False
                     st.rerun()
