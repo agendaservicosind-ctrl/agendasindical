@@ -50,7 +50,6 @@ def check_password(provided: str, stored) -> bool:
     if stored is None or not provided:
         return False
 
-    # Converte bytes → str (essencial no Streamlit Cloud)
     if isinstance(stored, (bytes, bytearray)):
         try:
             stored = stored.decode('utf-8')
@@ -63,7 +62,6 @@ def check_password(provided: str, stored) -> bool:
     if not stored:
         return False
 
-    # Compatibilidade com senhas antigas
     if not stored.startswith("pbkdf2_sha512"):
         if '$' not in stored:
             return stored == provided
@@ -74,7 +72,6 @@ def check_password(provided: str, stored) -> bool:
         except:
             return False
 
-    # Verificação PBKDF2
     try:
         parts = stored.split('$')
         if len(parts) != 4:
@@ -209,7 +206,7 @@ def deve_resetar_master():
             ).fetchone()
             return row is None or row[0] == 1
     except:
-        return True  # banco novo ou tabela não existe
+        return True
 
 def force_reset_master():
     senha_hash = hash_password(SENHA_INICIAL)
@@ -221,7 +218,7 @@ def force_reset_master():
             VALUES ('MASTER', ?, 'Master', 1)
         """, (senha_hash,))
         conn.commit()
-    st.info("Senha MASTER resetada para 'Sindicato@2026!'. Faça login e troque imediatamente.")
+    st.info("Senha do MASTER foi RESETADA para 'Sindicato@2026!'. Faça login agora e troque imediatamente.")
 
 def corrigir_coluna_foto():
     with sqlite3.connect(DB_NAME) as conn:
@@ -232,7 +229,6 @@ def corrigir_coluna_foto():
             cursor.execute("ALTER TABLE diretores ADD COLUMN foto BLOB")
             conn.commit()
 
-# ================== INICIALIZAÇÃO ==================
 init_db()
 
 if deve_resetar_master():
@@ -267,13 +263,6 @@ if st.session_state.user_data is None:
                 if user:
                     stored_username, stored_password, stored_tipo, senha_padrao = user
 
-                    # Debug temporário (deixe até confirmar que funciona)
-                    st.info(f"**DEBUG** - Usuário: {stored_username}")
-                    st.info(f"**DEBUG** - Tipo da senha no banco: {type(stored_password)}")
-                    if isinstance(stored_password, str):
-                        st.code("Hash armazenado (início):\n" + stored_password[:120] + "...")
-                    st.info(f"**DEBUG** - senha_padrao: {senha_padrao}")
-
                     if check_password(password, stored_password):
                         st.session_state.user_data = {
                             "username": stored_username,
@@ -281,13 +270,13 @@ if st.session_state.user_data is None:
                         }
                         st.session_state.forcar_troca_senha = bool(senha_padrao)
                         if senha_padrao:
-                            st.info("Senha inicial detectada. Troque agora por segurança.")
+                            st.info("Sua senha é a inicial. Por segurança, altere-a agora.")
                         st.success("Login realizado com sucesso!")
                         st.rerun()
                     else:
-                        st.error("Senha incorreta. Copie e cole exatamente: Sindicato@2026!")
+                        st.error("Senha incorreta. Verifique se digitou exatamente 'Sindicato@2026!'")
                 else:
-                    st.error("Usuário não encontrado.")
+                    st.error("Usuário não encontrado no banco.")
 else:
     user_info = st.session_state.user_data
     tipo_user = user_info["tipo"].lower()
@@ -299,6 +288,7 @@ else:
         result = cursor.fetchone()
         if result and result[0]:
             foto_bytes = result[0]
+
     with st.sidebar:
         if foto_bytes:
             foto_base64 = base64.b64encode(foto_bytes).decode('utf-8')
@@ -342,14 +332,14 @@ else:
                             conn.execute("UPDATE usuarios SET password = ?, senha_padrao = 0 WHERE username = ?",
                                          (hashed, nome_user))
                             conn.commit()
-                        st.success("Senha alterada! Faça login novamente.")
+                        st.success("Senha alterada com sucesso! Faça login novamente com a nova senha.")
                         st.session_state.user_data = None
                         st.session_state.forcar_troca_senha = False
                         st.rerun()
                     except Exception as e:
-                        st.error(f"Erro ao salvar: {str(e)}")
+                        st.error(f"**ERRO AO SALVAR NOVA SENHA**: {str(e)}")
     else:
-        # Menus de navegação (o resto do seu sistema continua aqui)
+        # Menus de navegação
         if tipo_user == "prestador":
             menu = ["Meus Agendamentos", "Sair"]
         else:
@@ -371,13 +361,6 @@ else:
         # ─── AGENDAR ────────────────────────────────────────────────────────────────
         if escolha == "Agendar":
             st.title("Novo Agendamento")
-            # ... (cole aqui todo o código da página Agendar que você tinha antes)
-
-        # As outras páginas (Atendimentos, Prestadores, Diretoria, Relatório...)
-        # continuam exatamente como estavam no seu código original
-
-        # Se você quiser, pode colar o resto aqui ou me mandar só a parte que está faltando
-        # Por enquanto deixei só até o menu para não ficar gigante demais
             busca = st.text_input("Busca do Sócio ou Dependente (Matrícula ou Nome)")
             socio_encontrado = None
             if busca.strip():
@@ -562,11 +545,11 @@ else:
             st.title("Gestão de Prestadores")
             with st.expander("Cadastrar novo prestador"):
                 with st.form("cad_prestador", clear_on_submit=True):
-                    nome_p = st.text_input("Nome completo do prestador", key="cad_nome_prestador")
-                    cpf_p = st.text_input("CPF (opcional)", key="cad_cpf_prestador")
-                    unidade_p = st.selectbox("Unidade", UNIDADES, key="cad_unidade_prestador")
-                    servico_p = st.selectbox("Serviço", SERVICOS, key="cad_servico_prestador")
-                    username_p = st.text_input("Nome de usuário para login (ex: CHIUINHO)", key="cad_username_prestador")
+                    nome_p = st.text_input("Nome completo do prestador")
+                    cpf_p = st.text_input("CPF (opcional)")
+                    unidade_p = st.selectbox("Unidade", UNIDADES)
+                    servico_p = st.selectbox("Serviço", SERVICOS)
+                    username_p = st.text_input("Nome de usuário para login")
                     if st.form_submit_button("Cadastrar Prestador + Acesso"):
                         if nome_p.strip() and username_p.strip():
                             unidade_norm = normalize_for_db(unidade_p)
@@ -589,40 +572,34 @@ else:
                                     VALUES (?, ?, 'Prestador', 1)
                                 """, (username_clean, senha_para_inserir))
                                 conn.commit()
-                                st.success(f"Prestador **{nome_p}** cadastrado!\n\n"
-                                           f"**Acesso criado:**\n"
-                                           f"• Usuário: **{username_clean}**\n"
-                                           f"• Senha inicial: **{SENHA_INICIAL}**\n"
-                                           f"→ Logue e troque a senha no primeiro acesso.")
+                                st.success(f"Prestador cadastrado!\nUsuário: {username_clean}\nSenha inicial: {SENHA_INICIAL}")
                                 st.rerun()
                             except ValueError as ve:
-                                if conn.in_transaction:
-                                    conn.rollback()
+                                conn.rollback()
                                 st.error(str(ve))
                             except Exception as e:
-                                if conn.in_transaction:
-                                    conn.rollback()
+                                conn.rollback()
                                 st.error(f"Erro ao cadastrar: {str(e)}")
                             finally:
                                 conn.close()
                         else:
-                            st.error("Nome completo e nome de usuário são obrigatórios.")
+                            st.error("Nome e usuário são obrigatórios.")
+
             with sqlite3.connect(DB_NAME) as conn:
                 df_p = pd.read_sql_query("SELECT id, nome, cpf, unidade, tipo_servico FROM prestadores ORDER BY nome", conn)
             if df_p.empty:
                 st.info("Nenhum prestador cadastrado.")
             else:
                 for _, row in df_p.iterrows():
-                    expander_key = f"prest_exp_{row['id']}"
-                    with st.expander(f"{row['nome']} – {row['tipo_servico']} ({row['unidade']})", expanded=False):
+                    with st.expander(f"{row['nome']} – {row['tipo_servico']} ({row['unidade']})"):
                         col1, col2 = st.columns([4, 1])
                         with col1:
                             with st.form(f"edit_prest_{row['id']}"):
-                                nome_edit = st.text_input("Nome", value=row['nome'], key=f"nome_edit_{row['id']}")
-                                cpf_edit = st.text_input("CPF", value=row['cpf'] or "", key=f"cpf_edit_{row['id']}")
-                                unidade_edit = st.selectbox("Unidade", UNIDADES, index=UNIDADES.index(row['unidade']) if row['unidade'] in UNIDADES else 0, key=f"uni_edit_{row['id']}")
-                                servico_edit = st.selectbox("Serviço", SERVICOS, index=SERVICOS.index(row['tipo_servico']) if row['tipo_servico'] in SERVICOS else 0, key=f"serv_edit_{row['id']}")
-                                if st.form_submit_button("Salvar alterações", key=f"salvar_prest_{row['id']}"):
+                                nome_edit = st.text_input("Nome", value=row['nome'])
+                                cpf_edit = st.text_input("CPF", value=row['cpf'] or "")
+                                unidade_edit = st.selectbox("Unidade", UNIDADES, index=UNIDADES.index(row['unidade']) if row['unidade'] in UNIDADES else 0)
+                                servico_edit = st.selectbox("Serviço", SERVICOS, index=SERVICOS.index(row['tipo_servico']) if row['tipo_servico'] in SERVICOS else 0)
+                                if st.form_submit_button("Salvar alterações"):
                                     unidade_norm = normalize_for_db(unidade_edit)
                                     servico_norm = normalize_for_db(servico_edit)
                                     with sqlite3.connect(DB_NAME) as conn:
@@ -635,41 +612,25 @@ else:
                                     st.success("Prestador atualizado!")
                                     st.rerun()
                         with col2:
-                            if st.button("Excluir", key=f"del_btn_prest_{row['id']}"):
-                                st.session_state[f"show_confirm_del_prest_{row['id']}"] = True
-                            if st.session_state.get(f"show_confirm_del_prest_{row['id']}", False):
-                                st.warning("Tem certeza que deseja excluir este prestador?")
-                                col_del1, col_del2 = st.columns(2)
-                                with col_del1:
-                                    if st.button("Sim, excluir", key=f"conf_del_prest_{row['id']}", type="primary"):
-                                        conn = sqlite3.connect(DB_NAME)
-                                        try:
-                                            cursor = conn.cursor()
-                                            cursor.execute("SELECT nome FROM prestadores WHERE id = ?", (row['id'],))
-                                            prest_nome_raw = cursor.fetchone()
-                                            if prest_nome_raw:
-                                                prest_nome_clean = prest_nome_raw[0].upper().replace(" ", "")
-                                                conn.execute("DELETE FROM usuarios WHERE username = ?", (prest_nome_clean,))
-                                            conn.execute("DELETE FROM prestadores WHERE id = ?", (row['id'],))
-                                            conn.commit()
-                                            st.success(f"Prestador **{row['nome']}** e possível acesso associado excluídos!")
-                                            st.rerun()
-                                        except Exception as e:
-                                            if conn.in_transaction:
-                                                conn.rollback()
-                                            st.error(f"Erro ao excluir: {str(e)}")
-                                        finally:
-                                            conn.close()
-                                with col_del2:
-                                    if st.button("Cancelar", key=f"cancel_del_prest_{row['id']}"):
-                                        st.session_state[f"show_confirm_del_prest_{row['id']}"] = False
-                                        st.rerun()
+                            if st.button("Excluir", key=f"del_prest_{row['id']}"):
+                                if st.button("Confirmar exclusão", key=f"conf_del_prest_{row['id']}"):
+                                    with sqlite3.connect(DB_NAME) as conn:
+                                        cursor = conn.cursor()
+                                        cursor.execute("SELECT nome FROM prestadores WHERE id = ?", (row['id'],))
+                                        prest_nome = cursor.fetchone()
+                                        if prest_nome:
+                                            prest_nome_clean = prest_nome[0].upper().replace(" ", "")
+                                            conn.execute("DELETE FROM usuarios WHERE username = ?", (prest_nome_clean,))
+                                        conn.execute("DELETE FROM prestadores WHERE id = ?", (row['id'],))
+                                        conn.commit()
+                                    st.success("Prestador excluído!")
+                                    st.rerun()
 
         # ─── DIRETORIA ──────────────────────────────────────────────────────────────
         elif escolha == "Diretoria" and tipo_user in ["master", "adm", "recepção"]:
             st.title("Gestão da Diretoria")
             is_master = (tipo_user == "master")
-            with st.expander("Cadastrar novo usuário (diretor ou prestador)" if is_master else "Somente Master pode cadastrar"):
+            with st.expander("Cadastrar novo usuário" if is_master else "Apenas Master pode cadastrar"):
                 if is_master:
                     with st.form("cad_diretor"):
                         nome_d = st.text_input("Nome completo")
@@ -694,7 +655,7 @@ else:
                                         VALUES (?, ?, ?, 1)
                                     """, (usuario_d.strip(), senha_hash, nivel_d))
                                     conn.commit()
-                                    st.success("Usuário cadastrado! Senha inicial definida.")
+                                    st.success("Usuário cadastrado!")
                                     st.rerun()
                                 except sqlite3.IntegrityError:
                                     conn.rollback()
@@ -708,6 +669,7 @@ else:
                                 st.error("Nome e usuário são obrigatórios.")
                 else:
                     st.info("Apenas Master pode cadastrar novos usuários.")
+
             with sqlite3.connect(DB_NAME) as conn:
                 df_d = pd.read_sql_query("""
                     SELECT d.id, d.nome, d.cpf, d.area_responsavel, d.nivel_acesso, d.username,
@@ -732,11 +694,11 @@ else:
                                 area_edit = st.text_input("Área", value=row['area_responsavel'] or "")
                                 nivel_edit = st.selectbox("Nível", NIVEIS_ACESSO,
                                                           index=NIVEIS_ACESSO.index(row['nivel_acesso']) if row['nivel_acesso'] in NIVEIS_ACESSO else 0)
-                                foto_edit = st.file_uploader("Atualizar foto (opcional)", type=["jpg", "jpeg", "png"], key=f"foto_edit_{row['id']}")
-                                if st.form_submit_button("Salvar alterações"):
+                                foto_edit = st.file_uploader("Atualizar foto", type=["jpg", "jpeg", "png"], key=f"foto_{row['id']}")
+                                if st.form_submit_button("Salvar"):
                                     foto_bytes_edit = foto_edit.read() if foto_edit else None
                                     with sqlite3.connect(DB_NAME) as conn:
-                                        if foto_bytes_edit is not None:
+                                        if foto_bytes_edit:
                                             conn.execute("""
                                                 UPDATE diretores
                                                 SET nome = ?, cpf = ?, area_responsavel = ?, nivel_acesso = ?, foto = ?
@@ -749,25 +711,15 @@ else:
                                                 WHERE id = ?
                                             """, (nome_edit.strip(), limpar_cpf(cpf_edit), area_edit or None, nivel_edit, row['id']))
                                         conn.commit()
-                                    st.success("Usuário atualizado!")
+                                    st.success("Atualizado!")
                                     st.rerun()
                         with col2:
                             if row['foto']:
                                 foto_base64 = base64.b64encode(row['foto']).decode('utf-8')
-                                st.markdown(
-                                    f"""
-                                    <div style="text-align:center; margin:10px 0;">
-                                        <img src="data:image/jpeg;base64,{foto_base64}"
-                                             style="width:150px; height:150px; border-radius:50%; object-fit:cover; border:3px solid #ddd;">
-                                    </div>
-                                    """,
-                                    unsafe_allow_html=True
-                                )
-                            else:
-                                st.markdown("<div style='text-align:center; color:#aaa;'>Sem foto</div>", unsafe_allow_html=True)
+                                st.image(f"data:image/jpeg;base64,{foto_base64}", width=150)
                             if is_master:
                                 if st.button("Excluir", key=f"del_dir_{row['id']}"):
-                                    if st.button("Confirmar exclusão", key=f"conf_del_{row['id']}", type="primary"):
+                                    if st.button("Confirmar exclusão"):
                                         with sqlite3.connect(DB_NAME) as conn:
                                             cursor = conn.cursor()
                                             cursor.execute("SELECT username FROM diretores WHERE id = ?", (row['id'],))
@@ -776,23 +728,101 @@ else:
                                                 conn.execute("DELETE FROM usuarios WHERE username = ?", (username_dir[0],))
                                             conn.execute("DELETE FROM diretores WHERE id = ?", (row['id'],))
                                             conn.commit()
-                                        st.success("Usuário excluído!")
+                                        st.success("Excluído!")
                                         st.rerun()
-                                if st.button("Reset senha para inicial", key=f"reset_{row['id']}"):
-                                    if st.button("Confirmar reset", key=f"conf_reset_{row['id']}", type="primary"):
+                                if st.button("Reset senha inicial", key=f"reset_dir_{row['id']}"):
+                                    if st.button("Confirmar reset"):
                                         senha_reset = hash_password(SENHA_INICIAL)
-                                        conn.execute("""
-                                            UPDATE usuarios
-                                            SET password = ?, senha_padrao = 1
-                                            WHERE username = ?
-                                        """, (senha_reset, row['username']))
-                                        conn.commit()
-                                        st.success("Senha redefinida para a inicial.")
+                                        with sqlite3.connect(DB_NAME) as conn:
+                                            conn.execute("""
+                                                UPDATE usuarios
+                                                SET password = ?, senha_padrao = 1
+                                                WHERE username = ?
+                                            """, (senha_reset, row['username']))
+                                            conn.commit()
+                                        st.success("Senha resetada para inicial.")
                                         st.rerun()
-                                    else:
-                                        st.error("Não foi possível resetar (problema com hash).")
-                            else:
-                                st.info("Apenas Master pode excluir ou resetar senha.")
+
+        # ─── IMPORTAR SÓCIOS ────────────────────────────────────────────────────────
+        elif escolha == "Importar Sócios" and tipo_user in ["master", "adm"]:
+            st.title("Importar Sócios do Excel")
+            st.info("""
+            **Formato esperado do arquivo:**
+            - Arquivo .xlsx
+            - Aba chamada **Sócio**
+            - Colunas obrigatórias: **Matrícula**, **Nome**, **Empresa**
+            - Dependentes geralmente têm a coluna Empresa vazia ou em branco
+            """)
+
+            uploaded_file = st.file_uploader("Escolha o arquivo Excel", type=["xlsx"])
+
+            if uploaded_file is not None:
+                try:
+                    df = pd.read_excel(uploaded_file, sheet_name="Sócio")
+
+                    required_cols = ["Matrícula", "Nome", "Empresa"]
+                    missing = [col for col in required_cols if col not in df.columns]
+                    if missing:
+                        st.error(f"Colunas faltando: {', '.join(missing)}")
+                        st.stop()
+
+                    # Limpeza e normalização
+                    df["Matrícula"] = df["Matrícula"].astype(str).str.strip()
+                    df["Nome"] = df["Nome"].astype(str).str.strip().str.upper()
+                    df["Empresa"] = df["Empresa"].astype(str).str.strip().str.upper().replace(["NAN", "nan", ""], None)
+
+                    # Tipo: Titular se tem empresa, Dependente se não
+                    df["tipo"] = df["Empresa"].apply(lambda x: "Titular" if pd.notna(x) else "Dependente")
+
+                    df = df.dropna(subset=["Matrícula", "Nome"])
+                    df = df[df["Matrícula"].str.strip() != ""]
+
+                    st.success(f"Foram encontrados **{len(df)}** registros válidos.")
+
+                    st.subheader("Pré-visualização (primeiros 10)")
+                    st.dataframe(df.head(10), use_container_width=True)
+
+                    if st.button("IMPORTAR PARA O BANCO", type="primary"):
+                        with st.spinner("Importando..."):
+                            conn = sqlite3.connect(DB_NAME)
+                            cursor = conn.cursor()
+                            inserted = 0
+                            updated = 0
+
+                            for _, row in df.iterrows():
+                                mat = row["Matrícula"]
+                                nome = row["Nome"]
+                                empresa = row["Empresa"]
+                                tipo = row["tipo"]
+
+                                cursor.execute("SELECT 1 FROM socios WHERE matricula = ?", (mat,))
+                                exists = cursor.fetchone() is not None
+
+                                if exists:
+                                    cursor.execute("""
+                                        UPDATE socios
+                                        SET nome = ?, empresa = ?, tipo = ?
+                                        WHERE matricula = ?
+                                    """, (nome, empresa, tipo, mat))
+                                    updated += 1
+                                else:
+                                    cursor.execute("""
+                                        INSERT INTO socios (matricula, nome, empresa, tipo)
+                                        VALUES (?, ?, ?, ?)
+                                    """, (mat, nome, empresa, tipo))
+                                    inserted += 1
+
+                            conn.commit()
+                            conn.close()
+
+                        st.success(f"Importação finalizada!\nNovos: **{inserted}**\nAtualizados: **{updated}**")
+                        st.balloons()
+
+                except Exception as e:
+                    st.error(f"Erro ao ler/processar o arquivo: {str(e)}")
+                    st.info("Verifique se o arquivo tem a aba 'Sócio' e as colunas corretas.")
+            else:
+                st.warning("Faça upload do arquivo Excel para começar.")
 
         # ─── RELATÓRIO DE SERVIÇOS ─────────────────────────────────────────────────
         elif escolha == "Relatório de Serviços" and tipo_user == "master":
@@ -865,4 +895,27 @@ else:
                         file_name=f"relatorio_servicos_{date.today().strftime('%Y-%m-%d')}.xlsx",
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                     )
-                    st.warning("Para gerar PDF, instale reportlab: pip install reportlab")
+
+        # ─── REDEFINIR SENHAS ───────────────────────────────────────────────────────
+        elif escolha == "Redefinir Senhas" and tipo_user == "master":
+            st.title("Redefinir Senhas")
+            st.warning("Esta funcionalidade permite resetar senhas para a inicial. Use com cuidado.")
+            with sqlite3.connect(DB_NAME) as conn:
+                usuarios = pd.read_sql_query("SELECT username, tipo_acesso, senha_padrao FROM usuarios ORDER BY username", conn)
+            if usuarios.empty:
+                st.info("Nenhum usuário cadastrado.")
+            else:
+                for _, row in usuarios.iterrows():
+                    with st.expander(f"{row['username']} ({row['tipo_acesso']}) {'- Senha inicial' if row['senha_padrao'] else ''}"):
+                        if st.button("Resetar para inicial", key=f"reset_user_{row['username']}"):
+                            if st.button("CONFIRMAR RESET", key=f"conf_reset_{row['username']}"):
+                                senha_reset = hash_password(SENHA_INICIAL)
+                                with sqlite3.connect(DB_NAME) as conn:
+                                    conn.execute("""
+                                        UPDATE usuarios
+                                        SET password = ?, senha_padrao = 1
+                                        WHERE username = ?
+                                    """, (senha_reset, row['username']))
+                                    conn.commit()
+                                st.success(f"Senha de {row['username']} resetada para {SENHA_INICIAL}")
+                                st.rerun()
