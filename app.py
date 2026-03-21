@@ -7,6 +7,7 @@ import base64
 import os
 import io
 import hashlib
+import secrets
 import binascii
 
 st.set_page_config(
@@ -32,12 +33,10 @@ UNIDADES = [
 ]
 
 NIVEIS_ACESSO = ["Master", "ADM", "Recepção", "Prestador"]
-
 HORARIOS = [f"{h:02d}:{m:02d}" for h in range(8, 18) for m in (0, 30)]
-
 SENHA_INICIAL = "Sindicato@2026!"
 
-# ─── FUNÇÕES DE SENHA ───────────────────────────────────────────────────────────
+# ================== FUNÇÕES DE SENHA ==================
 def hash_password(password: str) -> str:
     salt = os.urandom(32)
     iterations = 100_000
@@ -78,7 +77,7 @@ def check_password(provided: str, stored) -> bool:
     except:
         return False
 
-# ─── AUXILIARES ─────────────────────────────────────────────────────────────────
+# ================== FUNÇÕES AUXILIARES ==================
 def normalize_for_db(text: str) -> str:
     if not text or not isinstance(text, str):
         return ""
@@ -100,14 +99,12 @@ def formatar_telefone(valor):
         return f"({valor[:2]}) {valor[2:6]}-{valor[6:]}"
     return valor
 
-# ─── BANCO DE DADOS ─────────────────────────────────────────────────────────────
+# ================== BANCO DE DADOS ==================
 def init_db():
     with sqlite3.connect(DB_NAME) as conn:
         conn.execute("PRAGMA journal_mode = WAL;")
         conn.execute("PRAGMA busy_timeout = 5000;")
         cursor = conn.cursor()
-
-        # Tabelas (mantidas iguais)
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS socios (
                 matricula TEXT PRIMARY KEY,
@@ -134,7 +131,6 @@ def init_db():
                 senha_padrao INTEGER DEFAULT 1
             )
         ''')
-
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS prestadores (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -144,7 +140,6 @@ def init_db():
                 tipo_servico TEXT NOT NULL
             )
         ''')
-
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS diretores (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -156,7 +151,6 @@ def init_db():
                 foto BLOB
             )
         ''')
-
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS agendamentos (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -184,18 +178,23 @@ def init_db():
             cursor.execute("ALTER TABLE agendamentos ADD COLUMN validado_por TEXT")
         except:
             pass
-
-        # Cria MASTER APENAS SE NÃO EXISTIR (não sobrescreve mais!)
-        cursor.execute("SELECT 1 FROM usuarios WHERE username = 'MASTER'")
-        if not cursor.fetchone():
-            master_hash = hash_password(SENHA_INICIAL)
+        
+        # Cria ou atualiza o MASTER
+        cursor.execute("SELECT senha_padrao FROM usuarios WHERE UPPER(username) = 'MASTER'")
+        row = cursor.fetchone()
+        master_hash = hash_password(SENHA_INICIAL)
+        if row is None:
             cursor.execute("""
-                INSERT INTO usuarios 
-                (username, password, tipo_acesso, senha_padrao)
+                INSERT INTO usuarios (username, password, tipo_acesso, senha_padrao)
                 VALUES ('MASTER', ?, 'Master', 1)
             """, (master_hash,))
             conn.commit()
-            st.info("Usuário MASTER criado pela primeira vez (senha inicial definida).")
+        elif row[0] == 1:
+            cursor.execute("""
+                UPDATE usuarios SET password = ?, senha_padrao = 1 
+                WHERE UPPER(username) = 'MASTER'
+            """, (master_hash,))
+            conn.commit()
 
 def corrigir_coluna_foto():
     with sqlite3.connect(DB_NAME) as conn:
@@ -234,18 +233,8 @@ if st.session_state.user_data is None:
                     ).fetchone()
                 if user:
                     stored_username, stored_password, stored_tipo, senha_padrao = user
-                    
-                    # DEBUG VISÍVEL (deixe ativado até confirmar que login funciona)
-                    st.info(f"**DEBUG** - Usuário encontrado: `{stored_username}`")
-                    st.info(f"**DEBUG** - Tipo do campo password: `{type(stored_password)}`")
-                    if isinstance(stored_password, str):
-                        st.info(f"**DEBUG** - Hash armazenado (completo para teste):")
-                        st.code(stored_password)
-                    elif isinstance(stored_password, bytes):
-                        st.info(f"**DEBUG** - Hash como bytes:")
-                        st.code(repr(stored_password))
-                    st.info(f"**DEBUG** - senha_padrao (1=inicial): `{senha_padrao}`")
-
+                    if isinstance(stored_password, (bytes, bytearray)):
+                        stored_password = stored_password.decode('utf-8', errors='replace')
                     if check_password(password, stored_password):
                         st.session_state.user_data = {
                             "username": stored_username,
@@ -254,19 +243,16 @@ if st.session_state.user_data is None:
                         st.session_state.forcar_troca_senha = bool(senha_padrao)
                         if senha_padrao:
                             st.info("Sua senha é a inicial. Por segurança, altere-a agora.")
-                        st.success("Login realizado com sucesso!")
+                        st.success("Login realizado!")
                         st.rerun()
                     else:
                         st.error("Senha incorreta.")
                 else:
                     st.error("Usuário não encontrado.")
-
-# ─── ÁREA LOGADA ────────────────────────────────────────────────────────────────
 else:
     user_info = st.session_state.user_data
     tipo_user = user_info["tipo"].lower()
     nome_user = user_info["username"]
-
     foto_bytes = None
     with sqlite3.connect(DB_NAME) as conn:
         cursor = conn.cursor()
@@ -274,7 +260,6 @@ else:
         result = cursor.fetchone()
         if result and result[0]:
             foto_bytes = result[0]
-
     with st.sidebar:
         if foto_bytes:
             foto_base64 = base64.b64encode(foto_bytes).decode('utf-8')
@@ -313,15 +298,17 @@ else:
                     st.error("Não use a senha inicial novamente.")
                 else:
                     hashed = hash_password(nova_senha)
-                    with sqlite3.connect(DB_NAME) as conn:
-                        conn.execute("UPDATE usuarios SET password = ?, senha_padrao = 0 WHERE username = ?",
-                                     (hashed, nome_user))
-                        conn.commit()
-                    st.success("Senha alterada com sucesso! Faça login novamente com a nova senha.")
-                    st.session_state.user_data = None
-                    st.session_state.forcar_troca_senha = False
-                    st.rerun()
-
+                    try:
+                        with sqlite3.connect(DB_NAME) as conn:
+                            conn.execute("UPDATE usuarios SET password = ?, senha_padrao = 0 WHERE username = ?",
+                                         (hashed, nome_user))
+                            conn.commit()
+                        st.success("Senha alterada! Faça login novamente.")
+                        st.session_state.user_data = None
+                        st.session_state.forcar_troca_senha = False
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Erro ao salvar nova senha: {str(e)}")
     else:
         # Menus de navegação
         if tipo_user == "prestador":
@@ -335,12 +322,65 @@ else:
             if tipo_user == "master":
                 menu.extend(["Relatório de Serviços", "Redefinir Senhas"])
             menu.append("Sair")
-
         escolha = st.sidebar.radio("Navegação", menu)
-
         if escolha == "Sair":
             st.session_state.user_data = None
             st.rerun()
+
+        # ─── IMPORTAR SÓCIOS ────────────────────────────────────────────────────────
+        if escolha == "Importar Sócios" and tipo_user in ["master", "adm"]:
+            st.title("Importar Sócios e Dependentes")
+            st.info("""
+            Formato esperado:
+            • Aba 'Sócio' → Col A: Matrícula | Col B: Nome | Col C: Empresa
+            • Aba 'Dependentes' → Col A: Matrícula | Col B: Nome | Col C: Empresa (geralmente em branco)
+            """)
+            arquivo = st.file_uploader("Planilha Excel", type=["xlsx"])
+            if arquivo:
+                try:
+                    xl = pd.ExcelFile(arquivo)
+                    df_final = pd.DataFrame()
+                    contagem = {"Sócio": 0, "Dependentes": 0}
+                    for aba, tipo in [("Sócio", "Titular"), ("Dependentes", "Dependente")]:
+                        if aba in xl.sheet_names:
+                            df = pd.read_excel(xl, sheet_name=aba, header=None, dtype=str, engine='openpyxl')
+                            if len(df.columns) >= 3:
+                                df = df.iloc[:, :3].copy()
+                                df.columns = ['matricula', 'nome', 'empresa']
+                            else:
+                                df = df.iloc[:, :2].copy()
+                                df.columns = ['matricula', 'nome']
+                                df['empresa'] = None
+                            df['tipo'] = tipo
+                            df['empresa'] = df['empresa'].astype(str).str.strip().replace(['nan', 'None', ''], None)
+                            if tipo == "Dependente":
+                                df['empresa'] = "Dependente"
+                            df['matricula'] = df['matricula'].apply(normalize_matricula)
+                            df['nome'] = df['nome'].astype(str).str.strip().str.upper()
+                            df['empresa'] = df['empresa'].fillna("").astype(str)
+                            df = df.dropna(subset=['matricula', 'nome'])
+                            df = df[df['matricula'] != '']
+                            contagem[aba] = len(df)
+                            df_final = pd.concat([df_final, df], ignore_index=True)
+                    if df_final.empty:
+                        st.error("Nenhum dado válido.")
+                    else:
+                        df_final = df_final.drop_duplicates(subset=['matricula', 'nome', 'tipo'], keep='last')
+                        st.subheader("Pré-visualização")
+                        st.dataframe(
+                            df_final[['matricula', 'nome', 'empresa', 'tipo']],
+                            use_container_width=True
+                        )
+                        st.info(f"Resumo:\n- Sócios: {contagem['Sócio']}\n- Dependentes: {contagem['Dependentes']}\nTotal: {len(df_final)}")
+                        if st.button("Confirmar importação"):
+                            with sqlite3.connect(DB_NAME) as conn:
+                                df_final.to_sql("socios", conn, if_exists="replace", index=False)
+                                conn.execute("CREATE INDEX IF NOT EXISTS idx_matricula ON socios(matricula)")
+                            st.success(f"Importados {len(df_final)} registros! (todos dependentes preservados)")
+                            st.rerun()
+                except Exception as e:
+                    st.error(f"Erro ao processar planilha: {str(e)}")
+                    st.info("Verifique se o arquivo é .xlsx válido e se contém as colunas esperadas.")
 
         # ─── AGENDAR ────────────────────────────────────────────────────────────────
         if escolha == "Agendar":
@@ -372,9 +412,14 @@ else:
                     else:
                         opcoes = []
                         for r in rows:
-                            tipo_txt = "Titular" if r[4] == "Titular" else "Dependente"
-                            opcoes.append(f"{r[1]} ({tipo_txt}) – Matr. {r[0]}")
-                        escolha_idx = st.radio("Selecione:", range(len(opcoes)), format_func=lambda i: opcoes[i])
+                            tipo_texto = "Titular" if r[4] == "Titular" else "Dependente"
+                            opcoes.append(f"{r[1]} ({tipo_texto}) – Matr. {r[0]}")
+                        escolha_idx = st.radio(
+                            "Selecione quem vai utilizar o serviço:",
+                            range(len(opcoes)),
+                            format_func=lambda i: opcoes[i],
+                            index=0
+                        )
                         socio_encontrado = rows[escolha_idx]
                 else:
                     st.warning("Nenhum sócio ou dependente encontrado.")
@@ -464,7 +509,7 @@ else:
                                     diretor_solicitante
                                 ))
                                 conn.commit()
-                                st.success("Agendamento registrado!")
+                                st.success("Agendamento registrado com sucesso!")
                                 st.rerun()
 
         # ─── ATENDIMENTOS / MEUS AGENDAMENTOS ───────────────────────────────────────
@@ -524,11 +569,11 @@ else:
             st.title("Gestão de Prestadores")
             with st.expander("Cadastrar novo prestador"):
                 with st.form("cad_prestador", clear_on_submit=True):
-                    nome_p = st.text_input("Nome completo do prestador")
-                    cpf_p = st.text_input("CPF (opcional)")
-                    unidade_p = st.selectbox("Unidade", UNIDADES)
-                    servico_p = st.selectbox("Serviço", SERVICOS)
-                    username_p = st.text_input("Nome de usuário para login")
+                    nome_p = st.text_input("Nome completo do prestador", key="cad_nome_prestador")
+                    cpf_p = st.text_input("CPF (opcional)", key="cad_cpf_prestador")
+                    unidade_p = st.selectbox("Unidade", UNIDADES, key="cad_unidade_prestador")
+                    servico_p = st.selectbox("Serviço", SERVICOS, key="cad_servico_prestador")
+                    username_p = st.text_input("Nome de usuário para login (ex: CHIUINHO)", key="cad_username_prestador")
                     if st.form_submit_button("Cadastrar Prestador + Acesso"):
                         if nome_p.strip() and username_p.strip():
                             unidade_norm = normalize_for_db(unidade_p)
@@ -545,22 +590,30 @@ else:
                                 cursor.execute("SELECT 1 FROM usuarios WHERE username = ?", (username_clean,))
                                 if cursor.fetchone():
                                     raise ValueError("Usuário já existe. Escolha outro nome.")
-                                senha_hash = hash_password(SENHA_INICIAL)
+                                senha_para_inserir = hash_password(SENHA_INICIAL)
                                 conn.execute("""
                                     INSERT INTO usuarios (username, password, tipo_acesso, senha_padrao)
                                     VALUES (?, ?, 'Prestador', 1)
-                                """, (username_clean, senha_hash))
+                                """, (username_clean, senha_para_inserir))
                                 conn.commit()
-                                st.success(f"Prestador cadastrado!\nUsuário: **{username_clean}**\nSenha inicial: **{SENHA_INICIAL}**")
+                                st.success(f"Prestador **{nome_p}** cadastrado!\n\n"
+                                           f"**Acesso criado:**\n"
+                                           f"• Usuário: **{username_clean}**\n"
+                                           f"• Senha inicial: **{SENHA_INICIAL}**\n"
+                                           f"→ Logue e troque a senha no primeiro acesso.")
                                 st.rerun()
                             except ValueError as ve:
-                                conn.rollback()
+                                if conn.in_transaction:
+                                    conn.rollback()
                                 st.error(str(ve))
                             except Exception as e:
-                                conn.rollback()
+                                if conn.in_transaction:
+                                    conn.rollback()
                                 st.error(f"Erro ao cadastrar: {str(e)}")
                             finally:
                                 conn.close()
+                        else:
+                            st.error("Nome completo e nome de usuário são obrigatórios.")
             with sqlite3.connect(DB_NAME) as conn:
                 df_p = pd.read_sql_query("SELECT id, nome, cpf, unidade, tipo_servico FROM prestadores ORDER BY nome", conn)
             if df_p.empty:
@@ -568,14 +621,14 @@ else:
             else:
                 for _, row in df_p.iterrows():
                     expander_key = f"prest_exp_{row['id']}"
-                    with st.expander(f"{row['nome']} – {row['tipo_servico']} ({row['unidade']})"):
+                    with st.expander(f"{row['nome']} – {row['tipo_servico']} ({row['unidade']})", expanded=False):
                         col1, col2 = st.columns([4, 1])
                         with col1:
                             with st.form(f"edit_prest_{row['id']}"):
                                 nome_edit = st.text_input("Nome", value=row['nome'], key=f"nome_edit_{row['id']}")
                                 cpf_edit = st.text_input("CPF", value=row['cpf'] or "", key=f"cpf_edit_{row['id']}")
-                                unidade_edit = st.selectbox("Unidade", UNIDADES, index=UNIDADES.index(row['unidade']), key=f"uni_edit_{row['id']}")
-                                servico_edit = st.selectbox("Serviço", SERVICOS, index=SERVICOS.index(row['tipo_servico']), key=f"serv_edit_{row['id']}")
+                                unidade_edit = st.selectbox("Unidade", UNIDADES, index=UNIDADES.index(row['unidade']) if row['unidade'] in UNIDADES else 0, key=f"uni_edit_{row['id']}")
+                                servico_edit = st.selectbox("Serviço", SERVICOS, index=SERVICOS.index(row['tipo_servico']) if row['tipo_servico'] in SERVICOS else 0, key=f"serv_edit_{row['id']}")
                                 if st.form_submit_button("Salvar alterações", key=f"salvar_prest_{row['id']}"):
                                     unidade_norm = normalize_for_db(unidade_edit)
                                     servico_norm = normalize_for_db(servico_edit)
@@ -590,57 +643,78 @@ else:
                                     st.rerun()
                         with col2:
                             if st.button("Excluir", key=f"del_btn_prest_{row['id']}"):
-                                with sqlite3.connect(DB_NAME) as conn:
-                                    cursor = conn.cursor()
-                                    cursor.execute("SELECT nome FROM prestadores WHERE id = ?", (row['id'],))
-                                    nome_prest_raw = cursor.fetchone()
-                                    if nome_prest_raw:
-                                        nome_prest_clean = nome_prest_raw[0].upper().replace(" ", "")
-                                        conn.execute("DELETE FROM usuarios WHERE username = ?", (nome_prest_clean,))
-                                    conn.execute("DELETE FROM prestadores WHERE id = ?", (row['id'],))
-                                    conn.commit()
-                                st.success("Prestador excluído!")
-                                st.rerun()
+                                st.session_state[f"show_confirm_del_prest_{row['id']}"] = True
+                            if st.session_state.get(f"show_confirm_del_prest_{row['id']}", False):
+                                st.warning("Tem certeza que deseja excluir este prestador?")
+                                col_del1, col_del2 = st.columns(2)
+                                with col_del1:
+                                    if st.button("Sim, excluir", key=f"conf_del_prest_{row['id']}", type="primary"):
+                                        conn = sqlite3.connect(DB_NAME)
+                                        try:
+                                            cursor = conn.cursor()
+                                            cursor.execute("SELECT nome FROM prestadores WHERE id = ?", (row['id'],))
+                                            prest_nome_raw = cursor.fetchone()
+                                            if prest_nome_raw:
+                                                prest_nome_clean = prest_nome_raw[0].upper().replace(" ", "")
+                                                conn.execute("DELETE FROM usuarios WHERE username = ?", (prest_nome_clean,))
+                                            conn.execute("DELETE FROM prestadores WHERE id = ?", (row['id'],))
+                                            conn.commit()
+                                            st.success(f"Prestador **{row['nome']}** e possível acesso associado excluídos!")
+                                            st.rerun()
+                                        except Exception as e:
+                                            if conn.in_transaction:
+                                                conn.rollback()
+                                            st.error(f"Erro ao excluir: {str(e)}")
+                                        finally:
+                                            conn.close()
+                                with col_del2:
+                                    if st.button("Cancelar", key=f"cancel_del_prest_{row['id']}"):
+                                        st.session_state[f"show_confirm_del_prest_{row['id']}"] = False
+                                        st.rerun()
 
         # ─── DIRETORIA ──────────────────────────────────────────────────────────────
         elif escolha == "Diretoria" and tipo_user in ["master", "adm", "recepção"]:
             st.title("Gestão da Diretoria")
-            with st.expander("Cadastrar novo usuário (diretor)"):
-                with st.form("cad_diretor"):
-                    nome_d = st.text_input("Nome completo")
-                    cpf_d = st.text_input("CPF (opcional)")
-                    area_d = st.text_input("Área de responsabilidade (opcional)")
-                    nivel_d = st.selectbox("Nível de acesso", NIVEIS_ACESSO)
-                    usuario_d = st.text_input("Nome de usuário (login)")
-                    foto_upload = st.file_uploader("Foto (opcional)", type=["jpg", "jpeg", "png"])
-                    if st.form_submit_button("Cadastrar"):
-                        if nome_d.strip() and usuario_d.strip():
-                            foto_bytes = foto_upload.read() if foto_upload else None
-                            conn = sqlite3.connect(DB_NAME)
-                            try:
-                                conn.execute("BEGIN TRANSACTION")
-                                conn.execute("""
-                                    INSERT INTO diretores (nome, cpf, area_responsavel, nivel_acesso, username, foto)
-                                    VALUES (?, ?, ?, ?, ?, ?)
-                                """, (nome_d.strip(), limpar_cpf(cpf_d), area_d or None, nivel_d, usuario_d.strip(), foto_bytes))
-                                senha_hash = hash_password(SENHA_INICIAL)
-                                conn.execute("""
-                                    INSERT INTO usuarios (username, password, tipo_acesso, senha_padrao)
-                                    VALUES (?, ?, ?, 1)
-                                """, (usuario_d.strip(), senha_hash, nivel_d))
-                                conn.commit()
-                                st.success("Usuário cadastrado! Senha inicial definida.")
-                                st.rerun()
-                            except sqlite3.IntegrityError:
-                                conn.rollback()
-                                st.error("Usuário já existe.")
-                            except Exception as e:
-                                conn.rollback()
-                                st.error(f"Erro ao cadastrar: {str(e)}")
-                            finally:
-                                conn.close()
-                        else:
-                            st.error("Nome e usuário são obrigatórios.")
+            is_master = (tipo_user == "master")
+            with st.expander("Cadastrar novo usuário (diretor ou prestador)" if is_master else "Somente Master pode cadastrar"):
+                if is_master:
+                    with st.form("cad_diretor"):
+                        nome_d = st.text_input("Nome completo")
+                        cpf_d = st.text_input("CPF (opcional)")
+                        area_d = st.text_input("Área de responsabilidade (opcional)")
+                        nivel_d = st.selectbox("Nível de acesso", NIVEIS_ACESSO)
+                        usuario_d = st.text_input("Nome de usuário (login)")
+                        foto_upload = st.file_uploader("Foto (opcional)", type=["jpg", "jpeg", "png"])
+                        if st.form_submit_button("Cadastrar"):
+                            if nome_d.strip() and usuario_d.strip():
+                                foto_bytes = foto_upload.read() if foto_upload else None
+                                conn = sqlite3.connect(DB_NAME)
+                                try:
+                                    conn.execute("BEGIN TRANSACTION")
+                                    conn.execute("""
+                                        INSERT INTO diretores (nome, cpf, area_responsavel, nivel_acesso, username, foto)
+                                        VALUES (?, ?, ?, ?, ?, ?)
+                                    """, (nome_d.strip(), limpar_cpf(cpf_d), area_d or None, nivel_d, usuario_d.strip(), foto_bytes))
+                                    senha_hash = hash_password(SENHA_INICIAL)
+                                    conn.execute("""
+                                        INSERT INTO usuarios (username, password, tipo_acesso, senha_padrao)
+                                        VALUES (?, ?, ?, 1)
+                                    """, (usuario_d.strip(), senha_hash, nivel_d))
+                                    conn.commit()
+                                    st.success("Usuário cadastrado! Senha inicial definida.")
+                                    st.rerun()
+                                except sqlite3.IntegrityError:
+                                    conn.rollback()
+                                    st.error("Usuário já existe.")
+                                except Exception as e:
+                                    conn.rollback()
+                                    st.error(f"Erro ao cadastrar: {str(e)}")
+                                finally:
+                                    conn.close()
+                            else:
+                                st.error("Nome e usuário são obrigatórios.")
+                else:
+                    st.info("Apenas Master pode cadastrar novos usuários.")
             with sqlite3.connect(DB_NAME) as conn:
                 df_d = pd.read_sql_query("""
                     SELECT d.id, d.nome, d.cpf, d.area_responsavel, d.nivel_acesso, d.username,
@@ -698,43 +772,34 @@ else:
                                 )
                             else:
                                 st.markdown("<div style='text-align:center; color:#aaa;'>Sem foto</div>", unsafe_allow_html=True)
-
-        # ─── IMPORTAR SÓCIOS ────────────────────────────────────────────────────────
-        elif escolha == "Importar Sócios" and tipo_user in ["master", "adm"]:
-            st.title("Importar Sócios e Dependentes")
-            st.info("""
-            Formato esperado:
-            • Aba 'Sócio' → Col A: Matrícula | Col B: Nome | Col C: Empresa
-            • Aba 'Dependentes' → Col A: Matrícula | Col B: Nome | Col C: Empresa (geralmente em branco)
-            """)
-            arquivo = st.file_uploader("Planilha Excel", type=["xlsx"])
-            if arquivo:
-                try:
-                    xl = pd.ExcelFile(arquivo)
-                    df_final = pd.DataFrame()
-                    for aba, tipo in [("Sócio", "Titular"), ("Dependentes", "Dependente")]:
-                        if aba in xl.sheet_names:
-                            df = pd.read_excel(xl, sheet_name=aba, header=None, dtype=str)
-                            df = df.iloc[:, :3].copy()
-                            df.columns = ['matricula', 'nome', 'empresa']
-                            df['tipo'] = tipo
-                            df['matricula'] = df['matricula'].apply(normalize_matricula)
-                            df['nome'] = df['nome'].astype(str).str.strip().str.upper()
-                            df = df.dropna(subset=['matricula', 'nome'])
-                            df_final = pd.concat([df_final, df], ignore_index=True)
-                    if df_final.empty:
-                        st.error("Nenhum dado válido.")
-                    else:
-                        st.subheader("Pré-visualização")
-                        st.dataframe(df_final.head(10), use_container_width=True)
-                        if st.button("Confirmar importação"):
-                            with sqlite3.connect(DB_NAME) as conn:
-                                df_final.to_sql("socios", conn, if_exists="replace", index=False)
-                                conn.execute("CREATE INDEX IF NOT EXISTS idx_matricula ON socios(matricula)")
-                            st.success(f"Importados {len(df_final)} registros!")
-                            st.rerun()
-                except Exception as e:
-                    st.error(f"Erro ao processar planilha: {str(e)}")
+                            if is_master:
+                                if st.button("Excluir", key=f"del_dir_{row['id']}"):
+                                    if st.button("Confirmar exclusão", key=f"conf_del_{row['id']}", type="primary"):
+                                        with sqlite3.connect(DB_NAME) as conn:
+                                            cursor = conn.cursor()
+                                            cursor.execute("SELECT username FROM diretores WHERE id = ?", (row['id'],))
+                                            username_dir = cursor.fetchone()
+                                            if username_dir and username_dir[0]:
+                                                conn.execute("DELETE FROM usuarios WHERE username = ?", (username_dir[0],))
+                                            conn.execute("DELETE FROM diretores WHERE id = ?", (row['id'],))
+                                            conn.commit()
+                                        st.success("Usuário excluído!")
+                                        st.rerun()
+                                if st.button("Reset senha para inicial", key=f"reset_{row['id']}"):
+                                    if st.button("Confirmar reset", key=f"conf_reset_{row['id']}", type="primary"):
+                                        senha_reset = hash_password(SENHA_INICIAL)
+                                        conn.execute("""
+                                            UPDATE usuarios
+                                            SET password = ?, senha_padrao = 1
+                                            WHERE username = ?
+                                        """, (senha_reset, row['username']))
+                                        conn.commit()
+                                        st.success("Senha redefinida para a inicial.")
+                                        st.rerun()
+                                    else:
+                                        st.error("Não foi possível resetar (problema com hash).")
+                            else:
+                                st.info("Apenas Master pode excluir ou resetar senha.")
 
         # ─── RELATÓRIO DE SERVIÇOS ─────────────────────────────────────────────────
         elif escolha == "Relatório de Serviços" and tipo_user == "master":
@@ -790,24 +855,21 @@ else:
                 if df_relatorio.empty:
                     st.info("Nenhum agendamento encontrado.")
                 else:
+                    st.success(f"{len(df_relatorio)} registros encontrados")
                     df_display = df_relatorio.copy()
                     df_display["Data"] = pd.to_datetime(df_display["Data"]).dt.strftime("%d/%m/%Y")
                     df_display["Criado em"] = pd.to_datetime(df_display["Criado em"]).dt.strftime("%d/%m/%Y %H:%M")
                     if "Validado em" in df_display.columns:
                         df_display["Validado em"] = pd.to_datetime(df_display["Validado em"], errors='coerce').dt.strftime("%d/%m/%Y %H:%M")
                     st.dataframe(df_display, use_container_width=True, hide_index=True)
-
-        # ─── REDEFINIR SENHAS ───────────────────────────────────────────────────────
-        elif escolha == "Redefinir Senhas" and tipo_user == "master":
-            st.title("Redefinir Senhas de Usuários")
-            with sqlite3.connect(DB_NAME) as conn:
-                df_usu = pd.read_sql_query("SELECT username, tipo_acesso FROM usuarios ORDER BY username", conn)
-            for _, row in df_usu.iterrows():
-                if st.button(f"Resetar senha de {row['username']} ({row['tipo_acesso']})", key=f"reset_{row['username']}"):
-                    hashed = hash_password(SENHA_INICIAL)
-                    with sqlite3.connect(DB_NAME) as conn:
-                        conn.execute("UPDATE usuarios SET password = ?, senha_padrao = 1 WHERE username = ?",
-                                     (hashed, row['username']))
-                        conn.commit()
-                    st.success(f"Senha de {row['username']} redefinida para a inicial.")
-                    st.rerun()
+                    output_excel = io.BytesIO()
+                    with pd.ExcelWriter(output_excel, engine='xlsxwriter') as writer:
+                        df_relatorio.to_excel(writer, index=False, sheet_name='Relatório')
+                    excel_data = output_excel.getvalue()
+                    st.download_button(
+                        label="Baixar em Excel (.xlsx)",
+                        data=excel_data,
+                        file_name=f"relatorio_servicos_{date.today().strftime('%Y-%m-%d')}.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                    )
+                    st.warning("Para gerar PDF, instale reportlab: pip install reportlab")
