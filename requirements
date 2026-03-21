@@ -176,3 +176,6 @@ yarl==1.23.0
 streamlit
 pandas>=2.0.0
 openpyxl
+streamlit
+pandas
+openpyxl
