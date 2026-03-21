@@ -48,15 +48,24 @@ def hash_password(password: str) -> str:
 def check_password(provided: str, stored) -> bool:
     if stored is None:
         return False
+    
+    # Converte bytes → str (essencial no Streamlit Cloud)
     if isinstance(stored, (bytes, bytearray)):
         try:
             stored = stored.decode('utf-8')
         except UnicodeDecodeError:
-            stored = stored.decode('latin1', errors='replace')
+            try:
+                stored = stored.decode('latin1')
+            except:
+                return False
+    
     provided = str(provided).strip()
     stored = str(stored).strip()
+    
     if not stored:
         return False
+    
+    # Compatibilidade com senhas antigas (SHA256 ou texto plano)
     if not stored.startswith("pbkdf2_sha512"):
         if '$' not in stored:
             return stored == provided
@@ -66,6 +75,8 @@ def check_password(provided: str, stored) -> bool:
             return computed == hashed
         except:
             return False
+    
+    # Verificação PBKDF2
     try:
         algo, iters_str, salt_hex, stored_hash = stored.split('$', 3)
         if algo != "pbkdf2_sha512":
@@ -106,6 +117,7 @@ def init_db():
         conn.execute("PRAGMA journal_mode = WAL;")
         conn.execute("PRAGMA busy_timeout = 5000;")
         cursor = conn.cursor()
+        
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS socios (
                 matricula TEXT PRIMARY KEY,
@@ -119,7 +131,7 @@ def init_db():
         for coluna in ['empresa', 'cpf', 'telefone', 'tipo']:
             try:
                 cursor.execute(f"ALTER TABLE socios ADD COLUMN {coluna} TEXT")
-            except sqlite3.OperationalError:
+            except:
                 pass
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_matricula ON socios(matricula)")
 
@@ -171,14 +183,11 @@ def init_db():
                 validado_por TEXT
             )
         ''')
-        try:
-            cursor.execute("ALTER TABLE agendamentos ADD COLUMN data_realizado TIMESTAMP")
-        except:
-            pass
-        try:
-            cursor.execute("ALTER TABLE agendamentos ADD COLUMN validado_por TEXT")
-        except:
-            pass
+        try: cursor.execute("ALTER TABLE agendamentos ADD COLUMN data_realizado TIMESTAMP")
+        except: pass
+        try: cursor.execute("ALTER TABLE agendamentos ADD COLUMN validado_por TEXT")
+        except: pass
+        
         conn.commit()
 
 def force_reset_master():
@@ -191,7 +200,7 @@ def force_reset_master():
             VALUES ('MASTER', ?, 'Master', 1)
         """, (senha_hash,))
         conn.commit()
-    st.info("Senha do usuário MASTER foi RESETADA para 'Sindicato@2026!'. Logue agora e troque imediatamente.")
+    st.info("Senha do MASTER foi RESETADA para 'Sindicato@2026!'. Faça login agora e troque imediatamente.")
 
 def corrigir_coluna_foto():
     with sqlite3.connect(DB_NAME) as conn:
@@ -203,7 +212,7 @@ def corrigir_coluna_foto():
             conn.commit()
 
 init_db()
-force_reset_master()  # <--- FORÇA RESET DO MASTER A CADA INÍCIO (remova depois de logar)
+force_reset_master()   # <--- FORÇA RESET A CADA INICIALIZAÇÃO (remova depois de trocar a senha)
 corrigir_coluna_foto()
 
 if 'user_data' not in st.session_state:
@@ -232,18 +241,17 @@ if st.session_state.user_data is None:
                 if user:
                     stored_username, stored_password, stored_tipo, senha_padrao = user
                     
-                    # DEBUG VISÍVEL (deixe até confirmar que funciona)
+                    # DEBUG VISÍVEL (deixe até funcionar 100%)
                     st.info(f"**DEBUG** - Usuário encontrado: `{stored_username}`")
                     st.info(f"**DEBUG** - Tipo do campo password: `{type(stored_password)}`")
                     if isinstance(stored_password, str):
-                        st.info(f"**DEBUG** - Hash armazenado (primeiros 60 chars):")
-                        st.code(stored_password[:60] + "..." if len(stored_password) > 60 else stored_password)
+                        st.info(f"**DEBUG** - Hash armazenado (primeiros 100 chars):")
+                        st.code(stored_password[:100] + "..." if len(stored_password) > 100 else stored_password)
                     elif isinstance(stored_password, bytes):
-                        st.info(f"**DEBUG** - Hash como bytes:")
-                        st.code(repr(stored_password[:60]) + "...")
+                        st.info(f"**DEBUG** - Hash como bytes (repr):")
+                        st.code(repr(stored_password[:100]) + "...")
                     st.info(f"**DEBUG** - senha_padrao (1=inicial): `{senha_padrao}`")
                     
-                    # Converte se necessário
                     if isinstance(stored_password, (bytes, bytearray)):
                         stored_password = stored_password.decode('utf-8', errors='replace')
                     
@@ -310,18 +318,21 @@ else:
                     st.error("Não use a senha inicial novamente.")
                 else:
                     hashed = hash_password(nova_senha)
+                    st.info(f"**DEBUG** - Novo hash gerado (primeiros 100 chars):")
+                    st.code(hashed[:100] + "..." if len(hashed) > 100 else hashed)
                     try:
                         with sqlite3.connect(DB_NAME) as conn:
                             conn.execute("UPDATE usuarios SET password = ?, senha_padrao = 0 WHERE username = ?",
                                          (hashed, nome_user))
                             conn.commit()
                         st.success("Senha alterada com sucesso! Faça login novamente com a nova senha.")
+                        # Logout automático
                         st.session_state.user_data = None
                         st.session_state.forcar_troca_senha = False
                         st.rerun()
                     except Exception as e:
-                        st.error(f"Erro ao salvar nova senha: {str(e)}")
-                        st.info("Tente novamente ou verifique se o banco está acessível.")
+                        st.error(f"**ERRO AO SALVAR NOVA SENHA**: {str(e)}")
+                        st.info("Tente novamente. Se persistir, delete o banco e redeploy.")
     else:
         # Menus de navegação
         if tipo_user == "prestador":
