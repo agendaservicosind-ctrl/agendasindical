@@ -173,7 +173,7 @@ whatsapp-python==4.3.0
 wheel==0.46.3
 yarg==0.1.10
 yarl==1.23.0
-streamlit
-pandas
-openpyxl
 xlsxwriter
+streamlit==1.42.0
+pandas==2.2.3
+openpyxl==3.1.5
