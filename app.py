@@ -120,6 +120,17 @@ def init_db():
             )
         ''')
         c.execute('''
+            CREATE TABLE IF NOT EXISTS diretores (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                nome TEXT NOT NULL,
+                cpf TEXT,
+                area_responsavel TEXT,
+                nivel_acesso TEXT,
+                username TEXT UNIQUE,
+                foto BLOB
+            )
+        ''')
+        c.execute('''
             CREATE TABLE IF NOT EXISTS agendamentos (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 matricula_socio TEXT,
@@ -148,7 +159,6 @@ def force_reset_master():
         c.execute("DELETE FROM usuarios WHERE UPPER(username) = 'MASTER'")
         c.execute("INSERT INTO usuarios (username, password, tipo_acesso, senha_padrao) VALUES ('MASTER', ?, 'Master', 1)", (senha_hash,))
         conn.commit()
-    st.success("✅ Banco criado! Senha MASTER resetada.")
 
 init_db()
 if not sqlite3.connect(DB_NAME).execute("SELECT 1 FROM usuarios WHERE UPPER(username)='MASTER'").fetchone():
@@ -224,11 +234,9 @@ else:
         # ====================== AGENDAR ======================
         if escolha == "Agendar":
             st.title("📅 Novo Agendamento")
-
             busca = st.text_input("🔍 Buscar Sócio ou Dependente (Matrícula ou Nome)")
             socio_encontrado = None
             rows = []
-
             if busca.strip():
                 busca_limpa = busca.strip()
                 busca_nome = f"%{normalize_for_db(busca)}%"
@@ -237,26 +245,16 @@ else:
                         SELECT matricula, nome, empresa, telefone, tipo
                         FROM socios
                         WHERE matricula = ? OR matricula LIKE ? OR UPPER(nome) LIKE ?
-                        ORDER BY matricula, 
-                                 CASE WHEN tipo = 'Titular' THEN 0 ELSE 1 END, 
-                                 nome
+                        ORDER BY matricula, CASE WHEN tipo = 'Titular' THEN 0 ELSE 1 END, nome
                     """, (busca_limpa, f"%{busca_limpa}%", busca_nome)).fetchall()
-
                 if rows:
                     st.success(f"✅ Encontrados **{len(rows)}** registro(s)")
-
-                    # Cria opções únicas para cada pessoa (resolve problema de duplicados no radio)
                     opcoes = []
                     for r in rows:
                         empresa_str = f" — {r[2]}" if r[2] else ""
                         label = f"{r[1]} — Matrícula {r[0]} ({r[4]}){empresa_str}"
                         opcoes.append((label, r))
-
-                    idx = st.radio(
-                        "Selecione quem vai utilizar o serviço:",
-                        range(len(opcoes)),
-                        format_func=lambda i: opcoes[i][0]
-                    )
+                    idx = st.radio("Selecione quem vai utilizar o serviço:", range(len(opcoes)), format_func=lambda i: opcoes[i][0])
                     socio_encontrado = opcoes[idx][1]
 
             col1, col2 = st.columns(2)
@@ -271,7 +269,7 @@ else:
 
             if not lista_prestadores:
                 st.error(f"⚠️ Nenhum prestador cadastrado para **{servico}** na **{unidade}**.")
-                st.info("💡 Cadastre um prestador em 'Prestadores' no menu lateral.")
+                st.info("Cadastre prestadores em 'Prestadores' no menu lateral.")
                 prestador = None
             else:
                 prestador = st.selectbox("Prestador / Responsável", lista_prestadores)
@@ -280,7 +278,6 @@ else:
                 nome = st.text_input("Nome completo", value=socio_encontrado[1] if socio_encontrado else "")
                 empresa = st.text_input("Empresa / Local de trabalho", value=socio_encontrado[2] if socio_encontrado else "")
                 telefone_raw = st.text_input("Telefone para contato", value=formatar_telefone(socio_encontrado[3]) if socio_encontrado else "")
-
                 col1, col2 = st.columns(2)
                 data_atendimento = col1.date_input("Data do atendimento", min_value=date.today(), max_value=date.today() + timedelta(days=120))
 
@@ -293,11 +290,10 @@ else:
                     horarios_disponiveis = [h for h in HORARIOS if h not in horarios_ocupados]
 
                 horario = col1.selectbox("Horário disponível", horarios_disponiveis if horarios_disponiveis else ["Nenhum horário disponível"])
-
                 st.text_input("Diretor solicitante", value=nome_user, disabled=True)
 
                 if st.form_submit_button("✅ Confirmar Agendamento", type="primary"):
-                    if not nome.strip() or not prestador or not horarios_disponiveis:
+                    if not nome.strip() or not prestador:
                         st.error("Preencha todos os campos obrigatórios.")
                     else:
                         data_iso = data_atendimento.strftime("%Y-%m-%d")
@@ -316,57 +312,65 @@ else:
                         st.success("✅ Agendamento registrado com sucesso!")
                         st.rerun()
 
-        # ====================== IMPORTAR SÓCIOS ======================
-        elif escolha == "Importar Sócios" and tipo_user in ["master", "adm"]:
-            st.title("📤 Importar Sócios do Excel")
-            uploaded = st.file_uploader("Escolha o arquivo Excel", type=["xlsx"])
-            if uploaded:
-                try:
-                    df = pd.read_excel(uploaded, sheet_name="Sócio", engine="openpyxl")
-                    df["Matrícula"] = df["Matrícula"].astype(str).str.strip()
-                    df["Nome"] = df["Nome"].astype(str).str.strip().str.upper()
-                    df["Empresa"] = df["Empresa"].astype(str).str.strip().str.upper().replace(["NAN","nan",""], None)
-                    df["tipo"] = df["Empresa"].apply(lambda x: "Titular" if pd.notna(x) else "Dependente")
+        # ====================== CADASTRO DE DIRETORIA (AGORA ATIVO) ======================
+        elif escolha == "Diretoria" and tipo_user in ["master", "adm", "recepção"]:
+            st.title("👔 Cadastro de Diretoria")
 
-                    # Remove duplicados
-                    df = df.drop_duplicates(subset=["Matrícula", "Nome"], keep="first")
-                    df = df.dropna(subset=["Matrícula", "Nome"])
+            tab1, tab2 = st.tabs(["📝 Cadastrar Novo Diretor", "📋 Diretores Cadastrados"])
 
-                    st.success(f"✅ {len(df)} registros válidos.")
-                    st.dataframe(df.head(10))
+            with tab1:
+                with st.form("form_diretor", clear_on_submit=True):
+                    col1, col2 = st.columns(2)
+                    nome_d = col1.text_input("Nome completo do Diretor *")
+                    cpf_d = col2.text_input("CPF *")
+                    area = col1.selectbox("Área Responsável", 
+                                        ["Presidência", "Vice-Presidência", "Financeiro", "Jurídico", "Saúde", "Eventos", "Outros"])
+                    nivel = col2.selectbox("Nível de Acesso", ["Master", "Adm", "Recepção"])
+                    username_d = st.text_input("Username para login *", help="Será usado para acessar o sistema")
 
-                    if st.button("🚀 IMPORTAR", type="primary"):
-                        with sqlite3.connect(DB_NAME) as conn:
-                            inserted = 0
-                            for _, row in df.iterrows():
-                                try:
-                                    conn.execute("INSERT INTO socios (matricula, nome, empresa, tipo) VALUES (?,?,?,?)",
-                                                 (row["Matrícula"], row["Nome"], row["Empresa"], row["tipo"]))
-                                    inserted += 1
-                                except:
-                                    pass  # ignora duplicados
-                            conn.commit()
+                    foto = st.file_uploader("Foto do Diretor (opcional)", type=["png", "jpg", "jpeg"])
 
-                        st.success(f"✅ Importação concluída! {inserted} sócios inseridos.")
-
-                        # Mostra a logo
-                        if logo_base64:
-                            st.markdown(
-                                f"""
-                                <div style="text-align: center; margin: 40px 0;">
-                                    <img src="data:image/png;base64,{logo_base64}" 
-                                         style="max-width: 450px; width: 100%; height: auto; border-radius: 15px; box-shadow: 0 8px 20px rgba(0,0,0,0.15);">
-                                </div>
-                                """,
-                                unsafe_allow_html=True
-                            )
+                    if st.form_submit_button("✅ Cadastrar Diretor", type="primary"):
+                        if not nome_d or not cpf_d or not username_d:
+                            st.error("❌ Nome, CPF e Username são obrigatórios.")
                         else:
-                            st.balloons()
+                            foto_blob = foto.read() if foto else None
+                            with sqlite3.connect(DB_NAME) as conn:
+                                try:
+                                    conn.execute("""
+                                        INSERT INTO diretores (nome, cpf, area_responsavel, nivel_acesso, username, foto)
+                                        VALUES (?,?,?,?,?,?)
+                                    """, (nome_d.strip(), cpf_d.strip(), area, nivel, username_d.strip().upper(), foto_blob))
+                                    conn.commit()
+                                    st.success(f"✅ Diretor **{nome_d}** cadastrado com sucesso!")
+                                except sqlite3.IntegrityError:
+                                    st.error("❌ Username já existe. Escolha outro nome de usuário.")
+                                except Exception as e:
+                                    st.error(f"Erro ao cadastrar: {e}")
 
-                except Exception as e:
-                    st.error(f"Erro na importação: {e}")
+            with tab2:
+                st.subheader("Diretores Cadastrados")
+                with sqlite3.connect(DB_NAME) as conn:
+                    df_dir = pd.read_sql_query("""
+                        SELECT id, nome, cpf, area_responsavel AS Área, nivel_acesso AS Nível, username 
+                        FROM diretores ORDER BY nome
+                    """, conn)
 
-        # ====================== OUTRAS TELAS ======================
+                if df_dir.empty:
+                    st.info("Nenhum diretor cadastrado ainda.")
+                else:
+                    st.dataframe(df_dir, use_container_width=True, hide_index=True)
+
+                    st.subheader("🗑️ Remover Diretor")
+                    diretor_remover = st.selectbox("Selecione o diretor para remover", df_dir["nome"].tolist())
+                    if st.button("🗑️ Remover Diretor Selecionado", type="secondary"):
+                        with sqlite3.connect(DB_NAME) as conn:
+                            conn.execute("DELETE FROM diretores WHERE nome = ?", (diretor_remover,))
+                            conn.commit()
+                        st.success(f"Diretor **{diretor_remover}** removido com sucesso!")
+                        st.rerun()
+
+        # ====================== ATENDIMENTOS ======================
         elif escolha in ["Atendimentos", "Meus Agendamentos"]:
             st.title("📋 Meus Agendamentos" if tipo_user == "prestador" else "📋 Lista de Atendimentos")
             filtro_status = st.selectbox("Filtrar por status", ["Todos", "Pendente", "Realizado", "Cancelado"])
@@ -388,6 +392,7 @@ else:
                 df = df.drop(columns=["data_atendimento"])
                 st.dataframe(df, use_container_width=True)
 
+        # ====================== PRESTADORES ======================
         elif escolha == "Prestadores" and tipo_user in ["master", "adm", "recepção"]:
             st.title("👷 Cadastro de Prestadores")
             with st.form("form_prestador"):
@@ -400,10 +405,12 @@ else:
                     if nome_p and uni_p and serv_p:
                         username_p = "".join(nome_p.split()).upper()[:30]
                         with sqlite3.connect(DB_NAME) as conn:
-                            conn.execute("INSERT INTO prestadores (nome, cpf, unidade, tipo_servico) VALUES (?,?,?,?)", (nome_p.strip(), cpf_p, uni_p, serv_p))
+                            conn.execute("INSERT INTO prestadores (nome, cpf, unidade, tipo_servico) VALUES (?,?,?,?)", 
+                                       (nome_p.strip(), cpf_p, uni_p, serv_p))
                             senha_hash = hash_password(SENHA_INICIAL)
                             try:
-                                conn.execute("INSERT INTO usuarios (username, password, tipo_acesso, senha_padrao) VALUES (?, ?, 'Prestador', 1)", (username_p, senha_hash))
+                                conn.execute("INSERT INTO usuarios (username, password, tipo_acesso, senha_padrao) VALUES (?, ?, 'Prestador', 1)", 
+                                           (username_p, senha_hash))
                                 st.success(f"✅ Prestador cadastrado!\nUsuário: `{username_p}`\nSenha inicial: `{SENHA_INICIAL}`")
                             except:
                                 st.warning("Prestador cadastrado (usuário já existia).")
@@ -414,6 +421,49 @@ else:
                 df_p = pd.read_sql_query("SELECT * FROM prestadores ORDER BY nome", conn)
             st.dataframe(df_p, use_container_width=True)
 
+        # ====================== IMPORTAR SÓCIOS ======================
+        elif escolha == "Importar Sócios" and tipo_user in ["master", "adm"]:
+            st.title("📤 Importar Sócios do Excel")
+            uploaded = st.file_uploader("Escolha o arquivo Excel", type=["xlsx"])
+            if uploaded:
+                try:
+                    df = pd.read_excel(uploaded, sheet_name="Sócio", engine="openpyxl")
+                    df["Matrícula"] = df["Matrícula"].astype(str).str.strip()
+                    df["Nome"] = df["Nome"].astype(str).str.strip().str.upper()
+                    df["Empresa"] = df["Empresa"].astype(str).str.strip().str.upper().replace(["NAN","nan",""], None)
+                    df["tipo"] = df["Empresa"].apply(lambda x: "Titular" if pd.notna(x) else "Dependente")
+                    df = df.drop_duplicates(subset=["Matrícula", "Nome"], keep="first")
+                    df = df.dropna(subset=["Matrícula", "Nome"])
+
+                    st.success(f"✅ {len(df)} registros válidos.")
+                    st.dataframe(df.head(10))
+
+                    if st.button("🚀 IMPORTAR", type="primary"):
+                        with sqlite3.connect(DB_NAME) as conn:
+                            inserted = 0
+                            for _, row in df.iterrows():
+                                try:
+                                    conn.execute("INSERT INTO socios (matricula, nome, empresa, tipo) VALUES (?,?,?,?)",
+                                                 (row["Matrícula"], row["Nome"], row["Empresa"], row["tipo"]))
+                                    inserted += 1
+                                except:
+                                    pass
+                            conn.commit()
+                        st.success(f"✅ Importação concluída! {inserted} sócios inseridos.")
+                        if logo_base64:
+                            st.markdown(
+                                f"""
+                                <div style="text-align: center; margin: 40px 0;">
+                                    <img src="data:image/png;base64,{logo_base64}" 
+                                         style="max-width: 450px; width: 100%; height: auto; border-radius: 15px; box-shadow: 0 8px 20px rgba(0,0,0,0.15);">
+                                </div>
+                                """,
+                                unsafe_allow_html=True
+                            )
+                except Exception as e:
+                    st.error(f"Erro na importação: {e}")
+
+        # ====================== RELATÓRIO ======================
         elif escolha == "Relatório de Serviços" and tipo_user == "master":
             st.title("📊 Relatório de Serviços")
             with sqlite3.connect(DB_NAME) as conn:
@@ -426,10 +476,7 @@ else:
             else:
                 st.dataframe(df, use_container_width=True)
 
-        elif escolha == "Diretoria" and tipo_user in ["master", "adm", "recepção"]:
-            st.title("👔 Cadastro de Diretoria")
-            st.info("Funcionalidade em breve...")
-
+        # ====================== REDEFINIR SENHAS ======================
         elif escolha == "Redefinir Senhas" and tipo_user == "master":
             st.title("🔑 Redefinir Senhas")
             with sqlite3.connect(DB_NAME) as conn:
@@ -442,5 +489,6 @@ else:
                         conn.commit()
                     st.success(f"Senha de {u[0]} resetada!")
                     st.rerun()
+
         else:
             st.info("Selecione uma opção no menu lateral.")
