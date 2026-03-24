@@ -322,9 +322,10 @@ else:
                 with st.form("form_diretor", clear_on_submit=True):
                     col1, col2 = st.columns(2)
                     nome_d = col1.text_input("Nome completo do Diretor *")
-                    cpf_d = col2.text_input("CPF")   # ← Agora opcional
+                    cpf_d = col2.text_input("CPF")   # CPF opcional
                     area = col1.selectbox("Área Responsável", 
-                                        ["Presidência", "Vice-Presidência", "Financeiro", "Jurídico", "Saúde", "Eventos", "Outros"])
+                                        ["Diretor", "Presidência", "Vice-Presidência", "Financeiro", 
+                                         "Jurídico", "Saúde", "Eventos", "Outros"])
                     nivel = col2.selectbox("Nível de Acesso", ["Master", "Adm", "Recepção"])
                     username_d = st.text_input("Username para login *", help="Será usado para acessar o sistema")
 
@@ -362,13 +363,71 @@ else:
                     st.dataframe(df_dir, use_container_width=True, hide_index=True)
 
                     st.subheader("🗑️ Remover Diretor")
-                    diretor_remover = st.selectbox("Selecione o diretor para remover", df_dir["nome"].tolist() if not df_dir.empty else [])
+                    diretor_remover = st.selectbox("Selecione o diretor para remover", 
+                                                 df_dir["nome"].tolist() if not df_dir.empty else [])
                     if st.button("🗑️ Remover Diretor Selecionado", type="secondary"):
                         with sqlite3.connect(DB_NAME) as conn:
                             conn.execute("DELETE FROM diretores WHERE nome = ?", (diretor_remover,))
                             conn.commit()
                         st.success(f"Diretor **{diretor_remover}** removido!")
                         st.rerun()
+
+        # ====================== RELATÓRIO DE SERVIÇOS (AGORA COM DOWNLOAD) ======================
+        elif escolha == "Relatório de Serviços" and tipo_user == "master":
+            st.title("📊 Relatório de Serviços")
+
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                data_inicio = st.date_input("Data Inicial", value=date.today() - timedelta(days=30))
+            with col2:
+                data_fim = st.date_input("Data Final", value=date.today())
+            with col3:
+                servico_filtro = st.selectbox("Serviço", ["Todos"] + SERVICOS)
+
+            query = """
+                SELECT tipo_servico AS Serviço, 
+                       unidade AS Unidade, 
+                       status AS Status, 
+                       COUNT(*) AS Quantidade
+                FROM agendamentos 
+                WHERE data_atendimento BETWEEN ? AND ?
+            """
+            params = [data_inicio.strftime("%Y-%m-%d"), data_fim.strftime("%Y-%m-%d")]
+
+            if servico_filtro != "Todos":
+                query += " AND tipo_servico = ?"
+                params.append(servico_filtro)
+
+            query += " GROUP BY tipo_servico, unidade, status ORDER BY Quantidade DESC"
+
+            with sqlite3.connect(DB_NAME) as conn:
+                df = pd.read_sql_query(query, conn, params=params)
+
+            if df.empty:
+                st.warning("Nenhum agendamento encontrado no período selecionado.")
+            else:
+                st.dataframe(df, use_container_width=True, hide_index=True)
+
+                total = df["Quantidade"].sum()
+                st.success(f"**Total de atendimentos no período: {total}**")
+
+                col_a, col_b = st.columns(2)
+                with col_a:
+                    if st.button("📥 Baixar Relatório em Excel", type="primary"):
+                        output = BytesIO()
+                        with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                            df.to_excel(writer, index=False, sheet_name="Relatorio_Servicos")
+                        output.seek(0)
+                        st.download_button(
+                            label="Clique para baixar o arquivo Excel",
+                            data=output.getvalue(),
+                            file_name=f"Relatorio_Servicos_{date.today()}.xlsx",
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                        )
+
+                with col_b:
+                    if st.button("📄 Baixar PDF (em breve)"):
+                        st.info("Funcionalidade de PDF será implementada em breve.")
 
         # ====================== OUTRAS TELAS ======================
         elif escolha in ["Atendimentos", "Meus Agendamentos"]:
@@ -458,18 +517,6 @@ else:
                             )
                 except Exception as e:
                     st.error(f"Erro na importação: {e}")
-
-        elif escolha == "Relatório de Serviços" and tipo_user == "master":
-            st.title("📊 Relatório de Serviços")
-            with sqlite3.connect(DB_NAME) as conn:
-                df = pd.read_sql_query("""
-                    SELECT tipo_servico AS Serviço, unidade AS Unidade, status AS Status, COUNT(*) AS Quantidade
-                    FROM agendamentos GROUP BY tipo_servico, unidade, status ORDER BY Quantidade DESC
-                """, conn)
-            if df.empty:
-                st.info("Nenhum agendamento ainda.")
-            else:
-                st.dataframe(df, use_container_width=True)
 
         elif escolha == "Redefinir Senhas" and tipo_user == "master":
             st.title("🔑 Redefinir Senhas")
