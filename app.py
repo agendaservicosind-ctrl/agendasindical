@@ -324,7 +324,7 @@ else:
                     nome_d = col1.text_input("Nome completo do Diretor *")
                     cpf_d = col2.text_input("CPF *")
                     area = col1.selectbox("Área Responsável", 
-                                        ["Presidência", "Vice-Presidência", "Financeiro", "Jurídico", "Saúde", "Eventos", "Outros"])
+                                        ["Presidência", "Vice-Presidência", "Financeiro", "Jurídico", "Saúde", "Eventos","Diretor", "Outros"])
                     nivel = col2.selectbox("Nível de Acesso", ["Master", "Adm", "Recepção"])
                     username_d = st.text_input("Username para login *", help="Será usado para acessar o sistema")
 
