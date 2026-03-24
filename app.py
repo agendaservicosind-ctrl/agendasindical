@@ -147,7 +147,7 @@ def force_reset_master():
         c.execute("DELETE FROM usuarios WHERE UPPER(username) = 'MASTER'")
         c.execute("INSERT INTO usuarios (username, password, tipo_acesso, senha_padrao) VALUES ('MASTER', ?, 'Master', 1)", (senha_hash,))
         conn.commit()
-    st.info("🔑 Senha do MASTER resetada para **Sindicato@2026!**")
+    st.success("✅ Banco criado! Senha MASTER resetada.")
 
 init_db()
 if not sqlite3.connect(DB_NAME).execute("SELECT 1 FROM usuarios WHERE UPPER(username)='MASTER'").fetchone():
@@ -194,8 +194,7 @@ else:
                     st.error("Senha inválida.")
                 else:
                     with sqlite3.connect(DB_NAME) as conn:
-                        conn.execute("UPDATE usuarios SET password = ?, senha_padrao = 0 WHERE username = ?", 
-                                     (hash_password(nova_senha), nome_user))
+                        conn.execute("UPDATE usuarios SET password = ?, senha_padrao = 0 WHERE username = ?", (hash_password(nova_senha), nome_user))
                         conn.commit()
                     st.success("Senha alterada com sucesso!")
                     st.session_state.user_data = None
@@ -223,7 +222,6 @@ else:
         # ====================== AGENDAR ======================
         if escolha == "Agendar":
             st.title("📅 Novo Agendamento")
-            # ... (código de agendamento mantido igual ao anterior - completo)
             busca = st.text_input("🔍 Buscar Sócio ou Dependente (Matrícula ou Nome)")
             socio_encontrado = None
             rows = []
@@ -346,94 +344,72 @@ else:
                 df_p = pd.read_sql_query("SELECT * FROM prestadores ORDER BY nome", conn)
             st.dataframe(df_p, use_container_width=True)
 
-        # ====================== RELATÓRIO DE SERVIÇOS (COM EXPORTAÇÃO) ======================
+        # ====================== RELATÓRIO DE SERVIÇOS ======================
         elif escolha == "Relatório de Serviços" and tipo_user == "master":
             st.title("📊 Relatório de Serviços")
-
             with sqlite3.connect(DB_NAME) as conn:
                 df = pd.read_sql_query("""
-                    SELECT 
-                        tipo_servico AS Serviço,
-                        unidade AS Unidade,
-                        status AS Status,
-                        COUNT(*) AS Quantidade
-                    FROM agendamentos 
-                    GROUP BY tipo_servico, unidade, status
-                    ORDER BY Quantidade DESC
+                    SELECT tipo_servico AS Serviço, unidade AS Unidade, status AS Status, COUNT(*) AS Quantidade
+                    FROM agendamentos GROUP BY tipo_servico, unidade, status ORDER BY Quantidade DESC
                 """, conn)
 
             if df.empty:
-                st.info("Nenhum agendamento encontrado ainda.")
+                st.info("Nenhum agendamento ainda.")
             else:
                 st.dataframe(df, use_container_width=True)
 
                 col1, col2 = st.columns(2)
                 with col1:
-                    if st.button("📥 Baixar como Excel", type="primary"):
+                    if st.button("📥 Baixar Excel", type="primary"):
                         output = BytesIO()
                         with pd.ExcelWriter(output, engine='openpyxl') as writer:
-                            df.to_excel(writer, index=False, sheet_name="Relatorio_Servicos")
+                            df.to_excel(writer, index=False, sheet_name="Relatorio")
                         output.seek(0)
-                        st.download_button(
-                            label="Clique aqui para baixar o Excel",
-                            data=output,
-                            file_name=f"Relatorio_Servicos_{date.today()}.xlsx",
-                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                        )
+                        st.download_button("Baixar arquivo Excel", data=output.getvalue(), file_name=f"Relatorio_{date.today()}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
                 with col2:
-                    if st.button("📄 Baixar como PDF", type="primary"):
-                        # PDF simples usando matplotlib (mais leve que reportlab)
-                        import matplotlib.pyplot as plt
-                        from matplotlib.backends.backend_pdf import PdfPages
-                        import tempfile
-
-                        fig, ax = plt.subplots(figsize=(12, 6))
-                        ax.axis('tight')
-                        ax.axis('off')
-                        table = ax.table(cellText=df.values, colLabels=df.columns, cellLoc='center', loc='center')
-                        table.auto_set_font_size(False)
-                        table.set_fontsize(8)
-                        table.scale(1.2, 1.2)
-
-                        plt.title("Relatório de Serviços - Sistema Sindicato", fontsize=14, pad=20)
-
-                        # Salvar em PDF temporário
-                        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
-                            with PdfPages(tmp.name) as pdf:
-                                pdf.savefig(fig, bbox_inches='tight')
-                            plt.close()
-
-                        with open(tmp.name, "rb") as f:
-                            pdf_bytes = f.read()
-
-                        st.download_button(
-                            label="Clique aqui para baixar o PDF",
-                            data=pdf_bytes,
-                            file_name=f"Relatorio_Servicos_{date.today()}.pdf",
-                            mime="application/pdf"
-                        )
+                    if st.button("📄 Baixar PDF", type="primary"):
+                        st.info("PDF em breve... (use Excel por enquanto)")
 
         # ====================== OUTRAS TELAS ======================
-        elif escolha == "Diretoria" and tipo_user in ["master", "adm", "recepção"]:
-            st.title("👔 Cadastro de Diretoria")
-            st.info("Funcionalidade completa em breve...")
-
         elif escolha == "Importar Sócios" and tipo_user in ["master", "adm"]:
             st.title("📤 Importar Sócios do Excel")
-            st.info("Funcionalidade completa em breve...")
+            uploaded = st.file_uploader("Escolha o arquivo Excel", type=["xlsx"])
+            if uploaded:
+                try:
+                    df = pd.read_excel(uploaded, sheet_name="Sócio", engine="openpyxl")
+                    df["Matrícula"] = df["Matrícula"].astype(str).str.strip()
+                    df["Nome"] = df["Nome"].astype(str).str.strip().str.upper()
+                    df["Empresa"] = df["Empresa"].astype(str).str.strip().str.upper().replace(["NAN","nan",""], None)
+                    df["tipo"] = df["Empresa"].apply(lambda x: "Titular" if pd.notna(x) else "Dependente")
+                    df = df.dropna(subset=["Matrícula", "Nome"])
+                    st.success(f"✅ {len(df)} registros válidos.")
+                    st.dataframe(df.head(10))
+                    if st.button("🚀 IMPORTAR", type="primary"):
+                        with sqlite3.connect(DB_NAME) as conn:
+                            for _, row in df.iterrows():
+                                conn.execute("INSERT INTO socios (matricula, nome, empresa, tipo) VALUES (?,?,?,?)", 
+                                             (row["Matrícula"], row["Nome"], row["Empresa"], row["tipo"]))
+                            conn.commit()
+                        st.success("Importação concluída!")
+                        st.balloons()
+                except Exception as e:
+                    st.error(f"Erro: {e}")
+
+        elif escolha == "Diretoria" and tipo_user in ["master", "adm", "recepção"]:
+            st.title("👔 Cadastro de Diretoria")
+            st.info("Funcionalidade em breve...")
 
         elif escolha == "Redefinir Senhas" and tipo_user == "master":
-            st.title("🔑 Redefinir Senhas de Usuários")
+            st.title("🔑 Redefinir Senhas")
             with sqlite3.connect(DB_NAME) as conn:
                 users = conn.execute("SELECT username, tipo_acesso FROM usuarios").fetchall()
             for u in users:
-                if st.button(f"🔄 Resetar senha de {u[0]} ({u[1]})", key=f"reset_{u[0]}"):
+                if st.button(f"🔄 Resetar {u[0]}", key=f"reset_{u[0]}"):
                     with sqlite3.connect(DB_NAME) as conn:
-                        conn.execute("UPDATE usuarios SET password = ?, senha_padrao = 1 WHERE username = ?", 
-                                     (hash_password(SENHA_INICIAL), u[0]))
+                        conn.execute("UPDATE usuarios SET password = ?, senha_padrao = 1 WHERE username = ?", (hash_password(SENHA_INICIAL), u[0]))
                         conn.commit()
-                    st.success(f"Senha de {u[0]} resetada para **{SENHA_INICIAL}**")
+                    st.success(f"Senha de {u[0]} resetada!")
                     st.rerun()
 
         else:
